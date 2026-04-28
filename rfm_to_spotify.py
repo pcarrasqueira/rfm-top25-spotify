@@ -4,7 +4,7 @@ Scrapa o RFM Top 25 em https://rfm.pt/top25rfm
 e atualiza a playlist Spotify indicada.
 
 Nota: Em Fevereiro de 2026 a Spotify removeu os endpoints /playlists/{id}/tracks
-e substituiu por /playlists/{id}/items. O campo track foi renomeado para item.
+e substituiu por /playlists/{id}/items. O DELETE espera {"uris": [...]} e não {"tracks": [...]}.
 A pesquisa via GET /search tem agora limit máximo de 10.
 """
 
@@ -112,9 +112,10 @@ def get_current_items(token: str, playlist_id: str) -> list[str]:
 
 
 def clear_playlist(token: str, playlist_id: str, uris: list[str]) -> None:
+    """Remove tracks da playlist. O endpoint /items espera {"uris": [...]}."""
     url = SPOTIFY_PLAYLIST_ITEMS.format(id=playlist_id)
     for i in range(0, len(uris), 100):
-        spotify_request("DELETE", url, token, json={"tracks": [{"uri": u} for u in uris[i:i + 100]]})
+        spotify_request("DELETE", url, token, json={"uris": uris[i:i + 100]})
 
 
 def add_items(token: str, playlist_id: str, uris: list[str]) -> None:
@@ -125,17 +126,17 @@ def add_items(token: str, playlist_id: str, uris: list[str]) -> None:
 
 
 def main() -> None:
-    print("=== RFM Top 25 \u2192 Spotify ===")
+    print("=== RFM Top 25 → Spotify ===")
 
     # 1. Scrape RFM
     print("\nA scraper o RFM Top 25...")
     tracks = scrape_rfm_top25()
     if not tracks:
-        print("ERRO: N\u00e3o foi poss\u00edvel obter os tracks do RFM.")
+        print("ERRO: Não foi possível obter os tracks do RFM.")
         sys.exit(1)
     print(f"{len(tracks)} tracks encontrados:")
     for t in tracks:
-        print(f"  {t['position']:2}. {t['artist']} \u2014 {t['title']}")
+        print(f"  {t['position']:2}. {t['artist']} — {t['title']}")
 
     # 2. Auth
     print("\nA obter access token Spotify...")
@@ -153,10 +154,10 @@ def main() -> None:
         uri = search_spotify(token, t["artist"], t["title"])
         if uri:
             uris.append(uri)
-            print(f"  \u2713 {t['artist']} \u2014 {t['title']}")
+            print(f"  ✓ {t['artist']} — {t['title']}")
         else:
             not_found.append(t)
-            print(f"  \u2717 {t['artist']} \u2014 {t['title']} (n\u00e3o encontrado)")
+            print(f"  ✗ {t['artist']} — {t['title']} (não encontrado)")
         time.sleep(0.1)
 
     if not uris:
@@ -167,31 +168,32 @@ def main() -> None:
     playlist_id  = os.environ["SPOTIFY_PLAYLIST_ID"]
     current_uris = get_current_items(token, playlist_id)
     if current_uris:
+        print(f"\nA limpar {len(current_uris)} tracks existentes...")
         clear_playlist(token, playlist_id, current_uris)
     add_items(token, playlist_id, uris)
-    print("Playlist atualizada com sucesso! \u2713")
+    print("Playlist atualizada com sucesso! ✓")
 
     # 6. Job Summary
     now = datetime.datetime.utcnow().strftime("%d/%m/%Y %H:%M UTC")
     playlist_url = f"https://open.spotify.com/playlist/{playlist_id}"
     summary = [
-        "## \U0001f3b5 RFM Top 25 \u2192 Spotify",
-        f"> Atualizado em **{now}** &nbsp;\u2014&nbsp; [{playlist_id}]({playlist_url})",
+        "## 🎵 RFM Top 25 → Spotify",
+        f"> Atualizado em **{now}** &nbsp;—&nbsp; [{playlist_id}]({playlist_url})",
         "",
         f"**{len(uris)}/{len(tracks)} tracks** adicionados com sucesso.",
         "",
-        "| # | Artista | M\u00fasica | Estado |",
+        "| # | Artista | Música | Estado |",
         "|---|---|---|---|",
     ]
     for t in tracks:
         found = not any(nf["position"] == t["position"] for nf in not_found)
-        estado = "\u2705" if found else "\u274c n\u00e3o encontrado"
+        estado = "✅" if found else "❌ não encontrado"
         summary.append(f"| {t['position']} | {t['artist']} | {t['title']} | {estado} |")
 
     if not_found:
         summary += [
             "",
-            f"\u26a0\ufe0f {len(not_found)} track(s) n\u00e3o encontrados no Spotify.",
+            f"⚠️ {len(not_found)} track(s) não encontrados no Spotify.",
         ]
 
     write_summary(summary)
