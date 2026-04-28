@@ -4,7 +4,7 @@ Dois workflows que sincronizam conteúdo da RFM com playlists Spotify.
 
 | Workflow | Playlist | Frequência |
 |---|---|---|
-| **RFM Top 25** | Os 25 mais tocados do momento | 1x/dia (09:00 UTC) |
+| **RFM Top 25** | Os 25 mais tocados do momento | Domingos 22:00 e Segundas 10:00 (Lisboa) |
 | **Últimas no Ar** | Rolling das últimas 100 músicas tocadas | Hora a hora |
 
 ---
@@ -37,8 +37,8 @@ No final imprime o Refresh Token — copia-o para o passo seguinte.
 
 ### 3. Criar as playlists no Spotify
 
-Cria duas playlists vazias no Spotify (pública ou privada, à tua escolha):
-- **RFM Top 25** — será substituída diariamente
+Cria duas playlists vazias no Spotify (últimas pública ou privada, à tua escolha):
+- **RFM Top 25** — substituída 2x por semana
 - **Últimas no Ar** — rolling das últimas 100 músicas tocadas na rádio
 
 O ID de cada playlist está no URL: `https://open.spotify.com/playlist/**ID_AQUI**`
@@ -59,7 +59,7 @@ Em **Settings → Secrets and variables → Actions** adiciona:
 
 Vai a **Actions** e corre cada workflow manualmente com **Run workflow**.
 
-Os logs mostram cada track encontrado (✓), já existente (=) ou não encontrado (✗).
+Os logs e o job summary mostram cada track encontrado (✓), já existente (=) ou não encontrado (✗).
 
 ---
 
@@ -96,7 +96,7 @@ python rfm_live_to_spotify.py
 
 ```
 .github/workflows/
-  rfm-to-spotify.yml        # Top 25 — diário 09:00 UTC
+  rfm-to-spotify.yml        # Top 25 — Domingos 21:00 UTC + Segundas 09:00 UTC
   rfm-live-to-spotify.yml   # Últimas no Ar — hora a hora
 rfm_to_spotify.py           # script Top 25
 rfm_live_to_spotify.py      # script Últimas no Ar

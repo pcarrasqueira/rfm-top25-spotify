@@ -1,9 +1,11 @@
 name: RFM Top 25 → Spotify
 
+run-name: "RFM Top 25 → Spotify | ${{ github.event_name == 'workflow_dispatch' && 'manual' || 'agendado' }} @ ${{ github.run_started_at }}"
+
 on:
   schedule:
-    # Corre todos os dias às 09:00 UTC
-    - cron: '0 9 * * *'
+    - cron: '0 21 * * 0'  # Domingo 21:00 UTC (22:00 Lisboa)
+    - cron: '0 9 * * 1'   # Segunda 09:00 UTC (10:00 Lisboa)
   workflow_dispatch:
 
 jobs:
@@ -23,8 +25,8 @@ jobs:
 
       - name: Run script
         env:
-          SPOTIFY_CLIENT_ID: ${{ secrets.SPOTIFY_CLIENT_ID }}
+          SPOTIFY_CLIENT_ID:     ${{ secrets.SPOTIFY_CLIENT_ID }}
           SPOTIFY_CLIENT_SECRET: ${{ secrets.SPOTIFY_CLIENT_SECRET }}
           SPOTIFY_REFRESH_TOKEN: ${{ secrets.SPOTIFY_REFRESH_TOKEN }}
-          SPOTIFY_PLAYLIST_ID: ${{ secrets.SPOTIFY_PLAYLIST_ID }}
+          SPOTIFY_PLAYLIST_ID:   ${{ secrets.SPOTIFY_PLAYLIST_ID }}
         run: python rfm_to_spotify.py
