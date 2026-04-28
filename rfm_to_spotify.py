@@ -2,11 +2,15 @@
 """
 Scrapa o RFM Top 25 em https://rfm.pt/top25rfm
 e atualiza a playlist Spotify indicada.
+
+O site do RFM carrega os tracks via JS dinâmico a partir do endpoint:
+  POST https://rfm.pt/ajax/top25/top25more_musics.aspx
+Os primeiros tracks também estão no HTML da página principal
+(seletores .medium e .t-title dentro de .g-pods-it).
 """
 
 import os
 import sys
-import json
 import time
 import requests
 from bs4 import BeautifulSoup
@@ -15,6 +19,7 @@ SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
 SPOTIFY_SEARCH_URL = "https://api.spotify.com/v1/search"
 SPOTIFY_PLAYLIST_URL = "https://api.spotify.com/v1/playlists/{id}/tracks"
 RFM_URL = "https://rfm.pt/top25rfm"
+RFM_ASPX_URL = "https://rfm.pt/ajax/top25/top25more_musics.aspx"
 
 
 def get_access_token() -> str:
@@ -36,82 +41,75 @@ def get_access_token() -> str:
     return resp.json()["access_token"]
 
 
-def scrape_rfm_top25() -> list[dict]:
-    """Devolve lista de {position, artist, title} do RFM Top 25."""
-    headers = {
-        "User-Agent": "Mozilla/5.0 (compatible; rfm-top25-spotify-bot/1.0)"
-    }
-    resp = requests.get(RFM_URL, headers=headers, timeout=20)
-    resp.raise_for_status()
-
-    soup = BeautifulSoup(resp.text, "lxml")
+def _parse_tracks_from_soup(soup: BeautifulSoup) -> list[dict]:
+    """Extrai tracks de um fragmento HTML do RFM (seletores .medium + .t-title)."""
     tracks = []
-
-    # RFM usa um bloco de JSON embebido com os dados da chart — tentamos isso primeiro
-    # e fazemos fallback para parsing HTML.
-    for script in soup.find_all("script", type="application/json"):
-        try:
-            data = json.loads(script.string or "")
-            # Procura estrutura {songs: [{title, artist}]}
-            songs = None
-            if isinstance(data, dict):
-                songs = data.get("songs") or data.get("tracks") or data.get("items")
-            if songs:
-                for i, s in enumerate(songs[:25], 1):
-                    tracks.append({
-                        "position": i,
-                        "title": s.get("title") or s.get("name", ""),
-                        "artist": s.get("artist") or s.get("artistName", ""),
-                    })
-                if tracks:
-                    return tracks
-        except (json.JSONDecodeError, AttributeError):
-            pass
-
-    # Fallback: parsing HTML — procura padrões comuns em sites de rádio PT
-    selectors = [
-        ("div.chart-item", "span.artist", "span.title"),
-        ("li.chart-item", ".artist", ".title"),
-        ("div.music-item", ".artist-name", ".song-name"),
-        ("article.top-item", ".artist", ".song"),
-    ]
-    for container_sel, artist_sel, title_sel in selectors:
-        items = soup.select(container_sel)
-        if not items:
-            continue
-        for i, item in enumerate(items[:25], 1):
-            artist_el = item.select_one(artist_sel)
-            title_el = item.select_one(title_sel)
-            if artist_el and title_el:
-                tracks.append({
-                    "position": i,
-                    "title": title_el.get_text(strip=True),
-                    "artist": artist_el.get_text(strip=True),
-                })
-        if tracks:
-            return tracks
-
-    # Última tentativa: qualquer lista ordenada ou div com atributo data-*
-    items = soup.select("[data-rank], [data-position], [data-index]")
-    for item in items[:25]:
-        text = item.get_text(separator=" | ", strip=True)
-        parts = text.split("|")
-        if len(parts) >= 2:
+    for item in soup.select(".g-pods-it"):
+        artist_el = item.select_one(".medium")
+        title_el = item.select_one(".t-title")
+        if artist_el and title_el:
             tracks.append({
-                "position": len(tracks) + 1,
-                "artist": parts[0].strip(),
-                "title": parts[1].strip(),
+                "artist": artist_el.get_text(strip=True),
+                "title": title_el.get_text(strip=True),
             })
-
     return tracks
+
+
+def scrape_rfm_top25() -> list[dict]:
+    """Devolve lista de {artist, title} com o Top 25 do RFM."""
+    base_headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; rfm-top25-spotify-bot/1.0)",
+        "Referer": RFM_URL,
+    }
+
+    # 1. Página principal — contém os primeiros ~18 tracks no HTML estático
+    resp = requests.get(RFM_URL, headers=base_headers, timeout=20)
+    resp.raise_for_status()
+    soup = BeautifulSoup(resp.text, "lxml")
+    tracks = _parse_tracks_from_soup(soup)
+    seen = {(t["artist"], t["title"]) for t in tracks}
+
+    # 2. Endpoint ASPX para os tracks adicionais (páginas seguintes)
+    aspx_headers = {
+        **base_headers,
+        "X-Requested-With": "XMLHttpRequest",
+        "Content-Type": "application/x-www-form-urlencoded",
+    }
+    for pag in range(0, 5):
+        if len(tracks) >= 25:
+            break
+        r = requests.post(
+            RFM_ASPX_URL,
+            data=f"pag={pag}&randval={time.time()}",
+            headers=aspx_headers,
+            timeout=15,
+        )
+        r.raise_for_status()
+        chunk_soup = BeautifulSoup(r.text, "lxml")
+        for t in _parse_tracks_from_soup(chunk_soup):
+            key = (t["artist"], t["title"])
+            if key not in seen:
+                seen.add(key)
+                tracks.append(t)
+
+    # Garante que devolvemos exatamente 25 (ou menos se o site tiver menos)
+    result = []
+    for i, t in enumerate(tracks[:25], 1):
+        result.append({"position": i, **t})
+    return result
 
 
 def search_spotify(token: str, artist: str, title: str) -> str | None:
     """Devolve o URI do track mais relevante no Spotify."""
     headers = {"Authorization": f"Bearer {token}"}
-    query = f"track:{title} artist:{artist}"
-    params = {"q": query, "type": "track", "limit": 5, "market": "PT"}
 
+    # Pesquisa precisa primeiro
+    params = {
+        "q": f"track:{title} artist:{artist}",
+        "type": "track",
+        "limit": 5,
+        "market": "PT",
+    }
     resp = requests.get(SPOTIFY_SEARCH_URL, headers=headers, params=params, timeout=15)
     if resp.status_code == 429:
         retry_after = int(resp.headers.get("Retry-After", 5))
@@ -140,12 +138,9 @@ def replace_playlist(token: str, playlist_id: str, uris: list[str]) -> None:
     }
     url = SPOTIFY_PLAYLIST_URL.format(id=playlist_id)
 
-    # Spotify aceita no máximo 100 URIs por pedido
-    # Primeiro PUT substitui os primeiros 100 (ou todos se < 100)
     resp = requests.put(url, headers=headers, json={"uris": uris[:100]}, timeout=15)
     resp.raise_for_status()
 
-    # Se houver mais de 100 (improvável para top 25), faz POST
     for batch_start in range(100, len(uris), 100):
         batch = uris[batch_start : batch_start + 100]
         resp = requests.post(url, headers=headers, json={"uris": batch}, timeout=15)
@@ -161,7 +156,7 @@ def main() -> None:
     if not tracks:
         print("ERRO: Não foi possível obter os tracks do RFM.")
         sys.exit(1)
-    print(f"{len(tracks)} tracks encontrados.")
+    print(f"{len(tracks)} tracks encontrados:")
     for t in tracks:
         print(f"  {t['position']:2}. {t['artist']} — {t['title']}")
 
@@ -170,7 +165,7 @@ def main() -> None:
     token = get_access_token()
     print("Token obtido com sucesso.")
 
-    # 3. Pesquisar cada track
+    # 3. Pesquisar cada track no Spotify
     print("\nA pesquisar tracks no Spotify...")
     uris = []
     not_found = []
@@ -182,7 +177,7 @@ def main() -> None:
         else:
             not_found.append(t)
             print(f"  ✗ {t['artist']} — {t['title']} (não encontrado)")
-        time.sleep(0.1)  # respeita rate limits
+        time.sleep(0.1)
 
     if not uris:
         print("ERRO: Nenhum track encontrado no Spotify.")
