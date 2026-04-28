@@ -3,13 +3,12 @@
 Scrapa o RFM Top 25 em https://rfm.pt/top25rfm
 e atualiza a playlist Spotify indicada.
 
-Estrutura do HTML da página:
-  A lista ordenada do top 25 está num <ol> (ou lista de <li>) onde cada
-  item tem:
-    - um <li> com o número da posição
-    - uma lista aninhada com artista e título como <li> separados
-  Abaixo desta lista existe uma secção de candidatos à votação
-  (com .g-pods-it) que NÃO devemos usar.
+Estrutura do HTML:
+  Os 25 tracks estão em <ul class='g-mx ...'> com:
+    <li class='t-pos'>  -> número da posição
+    <li class='t-cover'> -> capa
+    <li class='t-desc'>  -> <ul class='unstyled'><li>Artista</li><li>Título</li></ul>
+  Os dados estão integralmente no HTML estático, sem necessidade de JS.
 """
 
 import os
@@ -46,15 +45,8 @@ def get_access_token() -> str:
 def scrape_rfm_top25() -> list[dict]:
     """
     Devolve lista de {position, artist, title} com o Top 25 do RFM.
-
-    A lista real está no HTML estático como uma <ul> onde cada item é:
-      <li>
-        <number>   <- texto com o número
-        <ul>
-          <li>Artista</li>
-          <li>Título</li>
-        </ul>
-      </li>
+    Os tracks estão no HTML estático em <ul class='g-mx'> dentro de
+    section.list-25.
     """
     headers = {"User-Agent": "Mozilla/5.0 (compatible; rfm-top25-spotify-bot/1.0)"}
     resp = requests.get(RFM_URL, headers=headers, timeout=20)
@@ -62,42 +54,21 @@ def scrape_rfm_top25() -> list[dict]:
     soup = BeautifulSoup(resp.text, "lxml")
 
     tracks = []
+    for ul in soup.select("ul.g-mx"):
+        pos_el = ul.select_one("li.t-pos")
+        desc_el = ul.select_one("li.t-desc")
+        if not pos_el or not desc_el:
+            continue
+        position = pos_el.get_text(strip=True)
+        if not position.isdigit():
+            continue
+        lis = desc_el.select("ul.unstyled li")
+        if len(lis) >= 2:
+            artist = lis[0].get_text(strip=True)
+            title = lis[1].get_text(strip=True)
+            tracks.append({"position": int(position), "artist": artist, "title": title})
 
-    # Procura todas as <ul> da página e encontra a que contém os itens do top
-    # Cada item tem: li > (texto numérico + ul > [li artista, li titulo])
-    for ul in soup.find_all("ul"):
-        candidates = []
-        for li in ul.find_all("li", recursive=False):
-            # Texto direto do li (deve ser um número 1-25)
-            direct_text = li.find(text=True, recursive=False)
-            if not direct_text:
-                continue
-            position_str = direct_text.strip()
-            if not position_str.isdigit():
-                continue
-            position = int(position_str)
-            if position < 1 or position > 25:
-                continue
-
-            # Sub-lista com artista e título
-            sub_ul = li.find("ul")
-            if not sub_ul:
-                continue
-            sub_items = sub_ul.find_all("li", recursive=False)
-            if len(sub_items) < 2:
-                continue
-
-            artist = sub_items[0].get_text(strip=True)
-            title = sub_items[1].get_text(strip=True)
-            if artist and title:
-                candidates.append({"position": position, "artist": artist, "title": title})
-
-        # A <ul> correta é a que tem pelo menos 20 entradas válidas
-        if len(candidates) >= 20:
-            tracks = sorted(candidates, key=lambda x: x["position"])
-            break
-
-    return tracks
+    return sorted(tracks, key=lambda x: x["position"])
 
 
 def search_spotify(token: str, artist: str, title: str) -> str | None:
