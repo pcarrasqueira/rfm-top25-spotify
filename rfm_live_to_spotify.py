@@ -1,17 +1,14 @@
 #!/usr/bin/env python3
 """
-Scrapa o historial de musicas tocadas na RFM (rfm.pt/que-musica-era)
-e adiciona as novas a uma playlist Spotify, mantendo um limite de 100 tracks
-e sem duplicados.
-
-Corre 4x por dia via GitHub Actions e recolhe a hora actual e a anterior
-para nao perder musicas entre execucoes.
+Scrapa o historial de musicas tocadas na RFM (rfm.pt/que-musica-era).
+O site devolve sempre a hora actual independentemente dos parametros,
+por isso recolhemos so a hora actual em cada execucao.
+Corre 4x por dia via GitHub Actions. Sem duplicados, limite de 100 tracks.
 """
 
 import os
 import sys
 import time
-import datetime
 import requests
 from bs4 import BeautifulSoup
 
@@ -50,46 +47,30 @@ def spotify(method: str, url: str, token: str, **kwargs) -> requests.Response:
 # Scraping RFM
 # ---------------------------------------------------------------------------
 
-def scrape_hour(period: str, hour: str) -> list[dict]:
-    params  = {"quando": period, "hora": hour}
+def scrape_current() -> list[dict]:
+    """Devolve os tracks da hora actual (o site ignora parametros de hora)."""
     headers = {"User-Agent": "Mozilla/5.0 (compatible; rfm-live-bot/1.0)"}
     try:
-        resp = requests.get(RFM_HISTORY_URL, params=params, headers=headers, timeout=20)
+        resp = requests.get(RFM_HISTORY_URL, headers=headers, timeout=20)
         resp.raise_for_status()
     except Exception as e:
-        print(f"  Erro ao scrape {period} hora {hour}: {e}")
+        print(f"  Erro ao scrape RFM: {e}")
         return []
 
     soup   = BeautifulSoup(resp.text, "lxml")
     tracks = []
+    seen   = set()
     for li in soup.select("ul li"):
         children = li.find_all("li")
         if len(children) >= 2:
             title  = children[0].get_text(strip=True)
             artist = children[1].get_text(strip=True)
-            if title and artist and title != "Quando" and artist != "Periodo":
-                tracks.append({"artist": artist, "title": title})
-    return tracks
-
-
-def get_recent_tracks() -> list[dict]:
-    now    = datetime.datetime.utcnow() + datetime.timedelta(hours=1)  # Lisboa ~UTC+1
-    tracks = []
-    seen   = set()
-
-    for delta in [0, 1]:  # hora actual e hora anterior
-        dt     = now - datetime.timedelta(hours=delta)
-        period = "hoje" if dt.date() == now.date() else "ontem"
-        hour   = str(dt.hour)
-        batch  = scrape_hour(period, hour)
-        print(f"\n  [{period} {hour}h] {len(batch)} tracks encontrados:")
-        for t in batch:
-            print(f"    - {t['artist']} \u2014 {t['title']}")
-            key = (t["artist"].upper(), t["title"].upper())
+            if not title or not artist or title == "Quando" or artist == "Periodo":
+                continue
+            key = (artist.upper(), title.upper())
             if key not in seen:
                 seen.add(key)
-                tracks.append(t)
-
+                tracks.append({"artist": artist, "title": title})
     return tracks
 
 
@@ -143,13 +124,15 @@ def add_items(token: str, playlist_id: str, uris: list[str]) -> None:
 def main() -> None:
     print("=== RFM Live \u2192 Spotify ===")
 
-    # 1. Scrape
-    print("\nA recolher historial RFM...")
-    raw_tracks = get_recent_tracks()
-    print(f"\n  {len(raw_tracks)} tracks unicos no total")
+    # 1. Scrape hora actual
+    print("\nA recolher tracks actuais da RFM...")
+    raw_tracks = scrape_current()
     if not raw_tracks:
         print("Nenhum track encontrado, a sair.")
         sys.exit(0)
+    print(f"  {len(raw_tracks)} tracks encontrados:")
+    for t in raw_tracks:
+        print(f"    - {t['artist']} \u2014 {t['title']}")
 
     # 2. Auth
     print("\nA autenticar no Spotify...")
@@ -163,7 +146,7 @@ def main() -> None:
     current_set  = set(current_uris)
     print(f"  {len(current)} tracks actuais na playlist")
 
-    # 4. Pesquisar no Spotify apenas os tracks ainda nao na playlist
+    # 4. Pesquisar apenas tracks novos
     print("\nA pesquisar tracks novos no Spotify...")
     new_uris = []
     for t in raw_tracks:
