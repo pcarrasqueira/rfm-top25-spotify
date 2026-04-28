@@ -51,12 +51,7 @@ def spotify(method: str, url: str, token: str, **kwargs) -> requests.Response:
 # ---------------------------------------------------------------------------
 
 def scrape_hour(period: str, hour: str) -> list[dict]:
-    """
-    period: 'hoje' ou 'ontem'
-    hour:   ex. '18' (so o numero)
-    Devolve lista de {artist, title}
-    """
-    params = {"quando": period, "hora": hour}
+    params  = {"quando": period, "hora": hour}
     headers = {"User-Agent": "Mozilla/5.0 (compatible; rfm-live-bot/1.0)"}
     try:
         resp = requests.get(RFM_HISTORY_URL, params=params, headers=headers, timeout=20)
@@ -78,10 +73,6 @@ def scrape_hour(period: str, hour: str) -> list[dict]:
 
 
 def get_recent_tracks() -> list[dict]:
-    """
-    Recolhe a hora actual e a hora anterior para nao perder
-    musicas tocadas perto da hora de execucao.
-    """
     now    = datetime.datetime.utcnow() + datetime.timedelta(hours=1)  # Lisboa ~UTC+1
     tracks = []
     seen   = set()
@@ -91,8 +82,9 @@ def get_recent_tracks() -> list[dict]:
         period = "hoje" if dt.date() == now.date() else "ontem"
         hour   = str(dt.hour)
         batch  = scrape_hour(period, hour)
-        print(f"  {period} {hour}h: {len(batch)} tracks")
+        print(f"\n  [{period} {hour}h] {len(batch)} tracks encontrados:")
         for t in batch:
+            print(f"    - {t['artist']} \u2014 {t['title']}")
             key = (t["artist"].upper(), t["title"].upper())
             if key not in seen:
                 seen.add(key)
@@ -117,7 +109,6 @@ def search_track(token: str, artist: str, title: str) -> str | None:
 
 
 def get_playlist_items(token: str, playlist_id: str) -> list[dict]:
-    """Devolve lista de {uri, added_at} ordenada por added_at desc (mais recente primeiro)."""
     url    = SPOTIFY_PLAYLIST_ITEMS.format(id=playlist_id)
     items  = []
     params = {"fields": "next,items(added_at,item(uri))", "limit": 100}
@@ -150,12 +141,12 @@ def add_items(token: str, playlist_id: str, uris: list[str]) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    print("=== RFM Live → Spotify ===")
+    print("=== RFM Live \u2192 Spotify ===")
 
     # 1. Scrape
     print("\nA recolher historial RFM...")
     raw_tracks = get_recent_tracks()
-    print(f"  {len(raw_tracks)} tracks unicos encontrados")
+    print(f"\n  {len(raw_tracks)} tracks unicos no total")
     if not raw_tracks:
         print("Nenhum track encontrado, a sair.")
         sys.exit(0)
@@ -167,23 +158,23 @@ def main() -> None:
 
     # 3. Estado actual da playlist
     print(f"\nA ler playlist {playlist_id}...")
-    current = get_playlist_items(token, playlist_id)
+    current      = get_playlist_items(token, playlist_id)
     current_uris = [i["uri"] for i in current]
     current_set  = set(current_uris)
-    print(f"  {len(current)} tracks actuais")
+    print(f"  {len(current)} tracks actuais na playlist")
 
     # 4. Pesquisar no Spotify apenas os tracks ainda nao na playlist
-    print("\nA pesquisar tracks novos...")
+    print("\nA pesquisar tracks novos no Spotify...")
     new_uris = []
     for t in raw_tracks:
         uri = search_track(token, t["artist"], t["title"])
         if not uri:
-            print(f"  ✗ {t['artist']} — {t['title']}")
+            print(f"  \u2717 {t['artist']} \u2014 {t['title']} (n\u00e3o encontrado)")
             continue
         if uri in current_set:
-            print(f"  = {t['artist']} — {t['title']} (ja existe)")
+            print(f"  = {t['artist']} \u2014 {t['title']} (j\u00e1 existe)")
             continue
-        print(f"  ✓ {t['artist']} — {t['title']}")
+        print(f"  \u2713 {t['artist']} \u2014 {t['title']} (novo)")
         new_uris.append(uri)
 
     if not new_uris:
@@ -191,20 +182,17 @@ def main() -> None:
         return
 
     # 5. Gerir limite de 100 tracks
-    # Adicionar no topo (position=0), remover os mais antigos se necessario
     total_after = len(current_uris) + len(new_uris)
-    to_remove   = []
     if total_after > PLAYLIST_LIMIT:
         overflow  = total_after - PLAYLIST_LIMIT
-        # os mais antigos estao no fim da lista (sorted desc)
         to_remove = current_uris[-overflow:]
-        print(f"\n  Limite atingido — a remover {len(to_remove)} tracks antigos")
+        print(f"\n  Limite atingido \u2014 a remover {len(to_remove)} tracks antigos")
         remove_items(token, playlist_id, to_remove)
 
     # 6. Adicionar novos no topo
     print(f"\nA adicionar {len(new_uris)} tracks novos...")
     add_items(token, playlist_id, new_uris)
-    print("Playlist atualizada com sucesso! ✓")
+    print("Playlist atualizada com sucesso! \u2713")
 
 
 if __name__ == "__main__":
