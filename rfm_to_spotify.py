@@ -2,13 +2,6 @@
 """
 Scrapa o RFM Top 25 em https://rfm.pt/top25rfm
 e atualiza a playlist Spotify indicada.
-
-Estrutura do HTML:
-  Os 25 tracks estão em <ul class='g-mx ...'> com:
-    <li class='t-pos'>  -> número da posição
-    <li class='t-cover'> -> capa
-    <li class='t-desc'>  -> <ul class='unstyled'><li>Artista</li><li>Título</li></ul>
-  Os dados estão integralmente no HTML estático, sem necessidade de JS.
 """
 
 import os
@@ -20,11 +13,12 @@ from bs4 import BeautifulSoup
 SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
 SPOTIFY_SEARCH_URL = "https://api.spotify.com/v1/search"
 SPOTIFY_PLAYLIST_URL = "https://api.spotify.com/v1/playlists/{id}/tracks"
+SPOTIFY_ME_URL = "https://api.spotify.com/v1/me"
+SPOTIFY_PLAYLIST_INFO_URL = "https://api.spotify.com/v1/playlists/{id}"
 RFM_URL = "https://rfm.pt/top25rfm"
 
 
 def spotify_request(method: str, url: str, token: str, **kwargs) -> requests.Response:
-    """Wrapper para pedidos à API Spotify com logging de erros detalhado."""
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
@@ -32,27 +26,20 @@ def spotify_request(method: str, url: str, token: str, **kwargs) -> requests.Res
     resp = requests.request(method, url, headers=headers, timeout=15, **kwargs)
     if not resp.ok:
         print(f"  HTTP {resp.status_code} {method} {url}")
-        try:
-            err = resp.json()
-            print(f"  Spotify error: {err.get('error', {}).get('message', resp.text[:300])}")
-        except Exception:
-            print(f"  Resposta: {resp.text[:300]}")
+        print(f"  Response body: {resp.text[:500]}")
         resp.raise_for_status()
     return resp
 
 
-def get_access_token() -> str:
-    """Troca o refresh token por um access token."""
+def get_access_token() -> tuple[str, str]:
+    """Troca o refresh token por um access token. Devolve (token, scopes)."""
     client_id = os.environ["SPOTIFY_CLIENT_ID"]
     client_secret = os.environ["SPOTIFY_CLIENT_SECRET"]
     refresh_token = os.environ["SPOTIFY_REFRESH_TOKEN"]
 
     resp = requests.post(
         SPOTIFY_TOKEN_URL,
-        data={
-            "grant_type": "refresh_token",
-            "refresh_token": refresh_token,
-        },
+        data={"grant_type": "refresh_token", "refresh_token": refresh_token},
         auth=(client_id, client_secret),
         timeout=15,
     )
@@ -60,15 +47,11 @@ def get_access_token() -> str:
         print(f"  HTTP {resp.status_code} ao obter token")
         print(f"  Resposta: {resp.text[:300]}")
         resp.raise_for_status()
-    return resp.json()["access_token"]
+    data = resp.json()
+    return data["access_token"], data.get("scope", "(sem scope na resposta)")
 
 
 def scrape_rfm_top25() -> list[dict]:
-    """
-    Devolve lista de {position, artist, title} com o Top 25 do RFM.
-    Os tracks estão no HTML estático em <ul class='g-mx'> dentro de
-    section.list-25.
-    """
     headers = {"User-Agent": "Mozilla/5.0 (compatible; rfm-top25-spotify-bot/1.0)"}
     resp = requests.get(RFM_URL, headers=headers, timeout=20)
     resp.raise_for_status()
@@ -93,7 +76,6 @@ def scrape_rfm_top25() -> list[dict]:
 
 
 def search_spotify(token: str, artist: str, title: str) -> str | None:
-    """Devolve o URI do track mais relevante no Spotify."""
     params = {
         "q": f"track:{title} artist:{artist}",
         "type": "track",
@@ -101,17 +83,9 @@ def search_spotify(token: str, artist: str, title: str) -> str | None:
         "market": "PT",
     }
     resp = spotify_request("GET", SPOTIFY_SEARCH_URL, token, params=params)
-    if resp.status_code == 429:
-        retry_after = int(resp.headers.get("Retry-After", 5))
-        print(f"Rate limited — a aguardar {retry_after}s...")
-        time.sleep(retry_after)
-        return search_spotify(token, artist, title)
-
     items = resp.json().get("tracks", {}).get("items", [])
     if items:
         return items[0]["uri"]
-
-    # Fallback: pesquisa mais permissiva
     params["q"] = f"{artist} {title}"
     resp = spotify_request("GET", SPOTIFY_SEARCH_URL, token, params=params)
     items = resp.json().get("tracks", {}).get("items", [])
@@ -119,34 +93,45 @@ def search_spotify(token: str, artist: str, title: str) -> str | None:
 
 
 def replace_playlist(token: str, playlist_id: str, uris: list[str]) -> None:
-    """Substitui TODOS os tracks da playlist pelos novos URIs."""
     url = SPOTIFY_PLAYLIST_URL.format(id=playlist_id)
     spotify_request("PUT", url, token, json={"uris": uris[:100]})
-
     for batch_start in range(100, len(uris), 100):
-        batch = uris[batch_start: batch_start + 100]
-        spotify_request("POST", url, token, json={"uris": batch})
+        spotify_request("POST", url, token, json={"uris": uris[batch_start:batch_start + 100]})
 
 
 def main() -> None:
-    print("=== RFM Top 25 → Spotify ===")
+    print("=== RFM Top 25 \u2192 Spotify ===")
 
     # 1. Scrape RFM
     print("\nA scraper o RFM Top 25...")
     tracks = scrape_rfm_top25()
     if not tracks:
-        print("ERRO: Não foi possível obter os tracks do RFM.")
+        print("ERRO: N\u00e3o foi poss\u00edvel obter os tracks do RFM.")
         sys.exit(1)
     print(f"{len(tracks)} tracks encontrados:")
     for t in tracks:
-        print(f"  {t['position']:2}. {t['artist']} — {t['title']}")
+        print(f"  {t['position']:2}. {t['artist']} \u2014 {t['title']}")
 
     # 2. Auth Spotify
     print("\nA obter access token Spotify...")
-    token = get_access_token()
-    print("Token obtido com sucesso.")
+    token, scopes = get_access_token()
+    print(f"Token obtido. Scopes concedidos: {scopes}")
 
-    # 3. Pesquisar cada track no Spotify
+    # 3. Verificar identidade e ownership da playlist
+    print("\nA verificar conta autenticada...")
+    me = spotify_request("GET", SPOTIFY_ME_URL, token).json()
+    print(f"  Conta: {me.get('display_name')} ({me.get('id')}) | email: {me.get('email')}")
+
+    playlist_id = os.environ["SPOTIFY_PLAYLIST_ID"]
+    print(f"\nA verificar playlist {playlist_id}...")
+    pl = spotify_request("GET", SPOTIFY_PLAYLIST_INFO_URL.format(id=playlist_id), token).json()
+    owner = pl.get("owner", {})
+    print(f"  Playlist: '{pl.get('name')}' | Owner: {owner.get('display_name')} ({owner.get('id')})")
+    print(f"  Collaborative: {pl.get('collaborative')} | Public: {pl.get('public')}")
+    if owner.get("id") != me.get("id"):
+        print("  AVISO: O owner da playlist NAO corresponde à conta autenticada!")
+
+    # 4. Pesquisar tracks
     print("\nA pesquisar tracks no Spotify...")
     uris = []
     not_found = []
@@ -154,27 +139,22 @@ def main() -> None:
         uri = search_spotify(token, t["artist"], t["title"])
         if uri:
             uris.append(uri)
-            print(f"  ✓ {t['artist']} — {t['title']}")
+            print(f"  \u2713 {t['artist']} \u2014 {t['title']}")
         else:
             not_found.append(t)
-            print(f"  ✗ {t['artist']} — {t['title']} (não encontrado)")
+            print(f"  \u2717 {t['artist']} \u2014 {t['title']} (n\u00e3o encontrado)")
         time.sleep(0.1)
 
     if not uris:
         print("ERRO: Nenhum track encontrado no Spotify.")
         sys.exit(1)
 
-    print(f"\n{len(uris)}/{len(tracks)} tracks encontrados no Spotify.")
-    if not_found:
-        print("Tracks não encontrados:")
-        for t in not_found:
-            print(f"  - {t['artist']} — {t['title']}")
+    print(f"\n{len(uris)}/{len(tracks)} tracks encontrados.")
 
-    # 4. Atualizar playlist
-    playlist_id = os.environ["SPOTIFY_PLAYLIST_ID"]
+    # 5. Atualizar playlist
     print(f"\nA atualizar playlist {playlist_id}...")
     replace_playlist(token, playlist_id, uris)
-    print("Playlist atualizada com sucesso! ✓")
+    print("Playlist atualizada com sucesso! \u2713")
 
 
 if __name__ == "__main__":
