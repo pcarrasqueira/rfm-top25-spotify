@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Scrapa o historial de musicas tocadas na RFM (rfm.pt/que-musica-era)
-e adiciona as novas a uma playlist Spotify, mantendo um limite de 100 tracks
+e adiciona as novas a uma playlist Spotify, mantendo um limite de 300 tracks
 e sem duplicados. Corre hora a hora via GitHub Actions.
 
 Nota API Spotify (Fev 2026):
@@ -20,7 +20,7 @@ SPOTIFY_TOKEN_URL      = "https://accounts.spotify.com/api/token"
 SPOTIFY_SEARCH_URL     = "https://api.spotify.com/v1/search"
 SPOTIFY_PLAYLIST_ITEMS = "https://api.spotify.com/v1/playlists/{id}/items"
 RFM_HISTORY_URL        = "https://rfm.pt/que-musica-era"
-PLAYLIST_LIMIT         = 100
+PLAYLIST_LIMIT         = 300
 
 
 def write_summary(lines: list[str]) -> None:
@@ -162,7 +162,7 @@ def main() -> None:
         new_uris.append(uri)
         added.append(t)
 
-    # 5. Gerir limite de 100 tracks
+    # 5. Gerir limite de 300 tracks
     removed_count = 0
     if new_uris:
         total_after = len(current_uris) + len(new_uris)
