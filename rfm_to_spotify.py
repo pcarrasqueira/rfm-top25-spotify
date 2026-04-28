@@ -3,10 +3,13 @@
 Scrapa o RFM Top 25 em https://rfm.pt/top25rfm
 e atualiza a playlist Spotify indicada.
 
-O site do RFM carrega os tracks via JS dinâmico a partir do endpoint:
-  POST https://rfm.pt/ajax/top25/top25more_musics.aspx
-Os primeiros tracks também estão no HTML da página principal
-(seletores .medium e .t-title dentro de .g-pods-it).
+Estrutura do HTML da página:
+  A lista ordenada do top 25 está num <ol> (ou lista de <li>) onde cada
+  item tem:
+    - um <li> com o número da posição
+    - uma lista aninhada com artista e título como <li> separados
+  Abaixo desta lista existe uma secção de candidatos à votação
+  (com .g-pods-it) que NÃO devemos usar.
 """
 
 import os
@@ -19,7 +22,6 @@ SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
 SPOTIFY_SEARCH_URL = "https://api.spotify.com/v1/search"
 SPOTIFY_PLAYLIST_URL = "https://api.spotify.com/v1/playlists/{id}/tracks"
 RFM_URL = "https://rfm.pt/top25rfm"
-RFM_ASPX_URL = "https://rfm.pt/ajax/top25/top25more_musics.aspx"
 
 
 def get_access_token() -> str:
@@ -41,62 +43,61 @@ def get_access_token() -> str:
     return resp.json()["access_token"]
 
 
-def _parse_tracks_from_soup(soup: BeautifulSoup) -> list[dict]:
-    """Extrai tracks de um fragmento HTML do RFM (seletores .medium + .t-title)."""
-    tracks = []
-    for item in soup.select(".g-pods-it"):
-        artist_el = item.select_one(".medium")
-        title_el = item.select_one(".t-title")
-        if artist_el and title_el:
-            tracks.append({
-                "artist": artist_el.get_text(strip=True),
-                "title": title_el.get_text(strip=True),
-            })
-    return tracks
-
-
 def scrape_rfm_top25() -> list[dict]:
-    """Devolve lista de {artist, title} com o Top 25 do RFM."""
-    base_headers = {
-        "User-Agent": "Mozilla/5.0 (compatible; rfm-top25-spotify-bot/1.0)",
-        "Referer": RFM_URL,
-    }
+    """
+    Devolve lista de {position, artist, title} com o Top 25 do RFM.
 
-    # 1. Página principal — contém os primeiros ~18 tracks no HTML estático
-    resp = requests.get(RFM_URL, headers=base_headers, timeout=20)
+    A lista real está no HTML estático como uma <ul> onde cada item é:
+      <li>
+        <number>   <- texto com o número
+        <ul>
+          <li>Artista</li>
+          <li>Título</li>
+        </ul>
+      </li>
+    """
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; rfm-top25-spotify-bot/1.0)"}
+    resp = requests.get(RFM_URL, headers=headers, timeout=20)
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, "lxml")
-    tracks = _parse_tracks_from_soup(soup)
-    seen = {(t["artist"], t["title"]) for t in tracks}
 
-    # 2. Endpoint ASPX para os tracks adicionais (páginas seguintes)
-    aspx_headers = {
-        **base_headers,
-        "X-Requested-With": "XMLHttpRequest",
-        "Content-Type": "application/x-www-form-urlencoded",
-    }
-    for pag in range(0, 5):
-        if len(tracks) >= 25:
+    tracks = []
+
+    # Procura todas as <ul> da página e encontra a que contém os itens do top
+    # Cada item tem: li > (texto numérico + ul > [li artista, li titulo])
+    for ul in soup.find_all("ul"):
+        candidates = []
+        for li in ul.find_all("li", recursive=False):
+            # Texto direto do li (deve ser um número 1-25)
+            direct_text = li.find(text=True, recursive=False)
+            if not direct_text:
+                continue
+            position_str = direct_text.strip()
+            if not position_str.isdigit():
+                continue
+            position = int(position_str)
+            if position < 1 or position > 25:
+                continue
+
+            # Sub-lista com artista e título
+            sub_ul = li.find("ul")
+            if not sub_ul:
+                continue
+            sub_items = sub_ul.find_all("li", recursive=False)
+            if len(sub_items) < 2:
+                continue
+
+            artist = sub_items[0].get_text(strip=True)
+            title = sub_items[1].get_text(strip=True)
+            if artist and title:
+                candidates.append({"position": position, "artist": artist, "title": title})
+
+        # A <ul> correta é a que tem pelo menos 20 entradas válidas
+        if len(candidates) >= 20:
+            tracks = sorted(candidates, key=lambda x: x["position"])
             break
-        r = requests.post(
-            RFM_ASPX_URL,
-            data=f"pag={pag}&randval={time.time()}",
-            headers=aspx_headers,
-            timeout=15,
-        )
-        r.raise_for_status()
-        chunk_soup = BeautifulSoup(r.text, "lxml")
-        for t in _parse_tracks_from_soup(chunk_soup):
-            key = (t["artist"], t["title"])
-            if key not in seen:
-                seen.add(key)
-                tracks.append(t)
 
-    # Garante que devolvemos exatamente 25 (ou menos se o site tiver menos)
-    result = []
-    for i, t in enumerate(tracks[:25], 1):
-        result.append({"position": i, **t})
-    return result
+    return tracks
 
 
 def search_spotify(token: str, artist: str, title: str) -> str | None:
@@ -142,7 +143,7 @@ def replace_playlist(token: str, playlist_id: str, uris: list[str]) -> None:
     resp.raise_for_status()
 
     for batch_start in range(100, len(uris), 100):
-        batch = uris[batch_start : batch_start + 100]
+        batch = uris[batch_start: batch_start + 100]
         resp = requests.post(url, headers=headers, json={"uris": batch}, timeout=15)
         resp.raise_for_status()
 
