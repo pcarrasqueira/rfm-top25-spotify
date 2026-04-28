@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-Scrapa o historial de musicas tocadas na RFM (rfm.pt/que-musica-era).
-O site devolve sempre a hora actual independentemente dos parametros,
-por isso recolhemos so a hora actual em cada execucao.
-Corre 4x por dia via GitHub Actions. Sem duplicados, limite de 100 tracks.
+Scrapa o historial de musicas tocadas na RFM (rfm.pt/que-musica-era)
+e adiciona as novas a uma playlist Spotify, mantendo um limite de 100 tracks
+e sem duplicados. Corre hora a hora via GitHub Actions.
 """
 
 import os
 import sys
 import time
+import datetime
 import requests
 from bs4 import BeautifulSoup
 
@@ -19,9 +19,13 @@ RFM_HISTORY_URL        = "https://rfm.pt/que-musica-era"
 PLAYLIST_LIMIT         = 100
 
 
-# ---------------------------------------------------------------------------
-# Auth
-# ---------------------------------------------------------------------------
+def write_summary(lines: list[str]) -> None:
+    summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not summary_file:
+        return
+    with open(summary_file, "a", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
 
 def get_access_token() -> str:
     resp = requests.post(
@@ -43,12 +47,7 @@ def spotify(method: str, url: str, token: str, **kwargs) -> requests.Response:
     return resp
 
 
-# ---------------------------------------------------------------------------
-# Scraping RFM
-# ---------------------------------------------------------------------------
-
 def scrape_current() -> list[dict]:
-    """Devolve os tracks da hora actual (o site ignora parametros de hora)."""
     headers = {"User-Agent": "Mozilla/5.0 (compatible; rfm-live-bot/1.0)"}
     try:
         resp = requests.get(RFM_HISTORY_URL, headers=headers, timeout=20)
@@ -73,10 +72,6 @@ def scrape_current() -> list[dict]:
                 tracks.append({"artist": artist, "title": title})
     return tracks
 
-
-# ---------------------------------------------------------------------------
-# Spotify helpers
-# ---------------------------------------------------------------------------
 
 def search_track(token: str, artist: str, title: str) -> str | None:
     for query in [f"track:{title} artist:{artist}", f"{artist} {title}"]:
@@ -117,10 +112,6 @@ def add_items(token: str, playlist_id: str, uris: list[str]) -> None:
         time.sleep(0.2)
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
 def main() -> None:
     print("=== RFM Live \u2192 Spotify ===")
 
@@ -148,34 +139,87 @@ def main() -> None:
 
     # 4. Pesquisar apenas tracks novos
     print("\nA pesquisar tracks novos no Spotify...")
-    new_uris = []
+    new_uris   = []
+    added      = []
+    skipped    = []
+    not_found  = []
     for t in raw_tracks:
         uri = search_track(token, t["artist"], t["title"])
         if not uri:
             print(f"  \u2717 {t['artist']} \u2014 {t['title']} (n\u00e3o encontrado)")
+            not_found.append(t)
             continue
         if uri in current_set:
             print(f"  = {t['artist']} \u2014 {t['title']} (j\u00e1 existe)")
+            skipped.append(t)
             continue
         print(f"  \u2713 {t['artist']} \u2014 {t['title']} (novo)")
         new_uris.append(uri)
-
-    if not new_uris:
-        print("\nNenhum track novo para adicionar.")
-        return
+        added.append(t)
 
     # 5. Gerir limite de 100 tracks
-    total_after = len(current_uris) + len(new_uris)
-    if total_after > PLAYLIST_LIMIT:
-        overflow  = total_after - PLAYLIST_LIMIT
-        to_remove = current_uris[-overflow:]
-        print(f"\n  Limite atingido \u2014 a remover {len(to_remove)} tracks antigos")
-        remove_items(token, playlist_id, to_remove)
+    removed_count = 0
+    if new_uris:
+        total_after = len(current_uris) + len(new_uris)
+        if total_after > PLAYLIST_LIMIT:
+            overflow  = total_after - PLAYLIST_LIMIT
+            to_remove = current_uris[-overflow:]
+            removed_count = len(to_remove)
+            print(f"\n  Limite atingido \u2014 a remover {removed_count} tracks antigos")
+            remove_items(token, playlist_id, to_remove)
 
-    # 6. Adicionar novos no topo
-    print(f"\nA adicionar {len(new_uris)} tracks novos...")
-    add_items(token, playlist_id, new_uris)
-    print("Playlist atualizada com sucesso! \u2713")
+        print(f"\nA adicionar {len(new_uris)} tracks novos...")
+        add_items(token, playlist_id, new_uris)
+        print("Playlist atualizada com sucesso! \u2713")
+    else:
+        print("\nNenhum track novo para adicionar.")
+
+    # 6. Job Summary
+    now = datetime.datetime.utcnow().strftime("%d/%m/%Y %H:%M UTC")
+    playlist_url = f"https://open.spotify.com/playlist/{playlist_id}"
+
+    summary = [
+        "## \U0001f4fb \u00daltimas no Ar \u2014 RFM Live \u2192 Spotify",
+        f"> Atualizado em **{now}** &nbsp;\u2014&nbsp; [{playlist_id}]({playlist_url})",
+        "",
+    ]
+
+    if added:
+        summary += [
+            f"### \u2705 {len(added)} track(s) adicionados",
+            "",
+            "| Artista | M\u00fasica |",
+            "|---|---|",
+        ]
+        for t in added:
+            summary.append(f"| {t['artist']} | {t['title']} |")
+        summary.append("")
+    else:
+        summary += ["### \u2139\ufe0f Sem tracks novos nesta hora", ""]
+
+    if skipped:
+        summary += [
+            f"<details><summary>= {len(skipped)} j\u00e1 existentes (clica para ver)</summary>",
+            "",
+            "| Artista | M\u00fasica |",
+            "|---|---|",
+        ]
+        for t in skipped:
+            summary.append(f"| {t['artist']} | {t['title']} |")
+        summary += ["", "</details>", ""]
+
+    if not_found:
+        summary += [
+            f"\u26a0\ufe0f {len(not_found)} track(s) n\u00e3o encontrados no Spotify:",
+        ]
+        for t in not_found:
+            summary.append(f"- {t['artist']} \u2014 {t['title']}")
+        summary.append("")
+
+    if removed_count:
+        summary.append(f"\U0001f5d1\ufe0f {removed_count} track(s) antigos removidos para manter limite de {PLAYLIST_LIMIT}.")
+
+    write_summary(summary)
 
 
 if __name__ == "__main__":

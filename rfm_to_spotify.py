@@ -11,6 +11,7 @@ A pesquisa via GET /search tem agora limit máximo de 10.
 import os
 import sys
 import time
+import datetime
 import requests
 from bs4 import BeautifulSoup
 
@@ -19,6 +20,14 @@ SPOTIFY_SEARCH_URL      = "https://api.spotify.com/v1/search"
 SPOTIFY_PLAYLIST_ITEMS  = "https://api.spotify.com/v1/playlists/{id}/items"
 SPOTIFY_ME_URL          = "https://api.spotify.com/v1/me"
 RFM_URL                 = "https://rfm.pt/top25rfm"
+
+
+def write_summary(lines: list[str]) -> None:
+    summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not summary_file:
+        return
+    with open(summary_file, "a", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
 
 
 def spotify_request(method: str, url: str, token: str, **kwargs) -> requests.Response:
@@ -35,14 +44,10 @@ def spotify_request(method: str, url: str, token: str, **kwargs) -> requests.Res
 
 
 def get_access_token() -> str:
-    client_id     = os.environ["SPOTIFY_CLIENT_ID"]
-    client_secret = os.environ["SPOTIFY_CLIENT_SECRET"]
-    refresh_token = os.environ["SPOTIFY_REFRESH_TOKEN"]
-
     resp = requests.post(
         SPOTIFY_TOKEN_URL,
-        data={"grant_type": "refresh_token", "refresh_token": refresh_token},
-        auth=(client_id, client_secret),
+        data={"grant_type": "refresh_token", "refresh_token": os.environ["SPOTIFY_REFRESH_TOKEN"]},
+        auth=(os.environ["SPOTIFY_CLIENT_ID"], os.environ["SPOTIFY_CLIENT_SECRET"]),
         timeout=15,
     )
     if not resp.ok:
@@ -79,13 +84,11 @@ def scrape_rfm_top25() -> list[dict]:
 
 
 def search_spotify(token: str, artist: str, title: str) -> str | None:
-    # limit máximo é 10 desde Fev 2026
     params = {"q": f"track:{title} artist:{artist}", "type": "track", "limit": 10, "market": "PT"}
     resp  = spotify_request("GET", SPOTIFY_SEARCH_URL, token, params=params)
     items = resp.json().get("tracks", {}).get("items", [])
     if items:
         return items[0]["uri"]
-    # fallback mais permissivo
     params["q"] = f"{artist} {title}"
     resp  = spotify_request("GET", SPOTIFY_SEARCH_URL, token, params=params)
     items = resp.json().get("tracks", {}).get("items", [])
@@ -93,7 +96,6 @@ def search_spotify(token: str, artist: str, title: str) -> str | None:
 
 
 def get_current_items(token: str, playlist_id: str) -> list[str]:
-    """Devolve todos os URIs actuais da playlist via novo endpoint /items."""
     url    = SPOTIFY_PLAYLIST_ITEMS.format(id=playlist_id)
     uris   = []
     params = {"fields": "next,items(item(uri))", "limit": 100}
@@ -101,7 +103,7 @@ def get_current_items(token: str, playlist_id: str) -> list[str]:
         resp = spotify_request("GET", url, token, params=params)
         data = resp.json()
         for entry in data.get("items", []):
-            item = entry.get("item")  # renomeado de 'track' para 'item' em Fev 2026
+            item = entry.get("item")
             if item and item.get("uri"):
                 uris.append(item["uri"])
         url    = data.get("next")
@@ -110,15 +112,12 @@ def get_current_items(token: str, playlist_id: str) -> list[str]:
 
 
 def clear_playlist(token: str, playlist_id: str, uris: list[str]) -> None:
-    """Remove todos os items da playlist em batches de 100 via DELETE /items."""
     url = SPOTIFY_PLAYLIST_ITEMS.format(id=playlist_id)
     for i in range(0, len(uris), 100):
-        batch = [{"uri": u} for u in uris[i:i + 100]]
-        spotify_request("DELETE", url, token, json={"tracks": batch})
+        spotify_request("DELETE", url, token, json={"tracks": [{"uri": u} for u in uris[i:i + 100]]})
 
 
 def add_items(token: str, playlist_id: str, uris: list[str]) -> None:
-    """Adiciona items à playlist em batches de 100 via POST /items."""
     url = SPOTIFY_PLAYLIST_ITEMS.format(id=playlist_id)
     for i in range(0, len(uris), 100):
         spotify_request("POST", url, token, json={"uris": uris[i:i + 100], "position": i})
@@ -164,24 +163,38 @@ def main() -> None:
         print("ERRO: Nenhum track encontrado no Spotify.")
         sys.exit(1)
 
-    print(f"\n{len(uris)}/{len(tracks)} tracks encontrados.")
-    if not_found:
-        for t in not_found:
-            print(f"  - {t['artist']} \u2014 {t['title']}")
-
-    # 5. Limpar playlist actual
-    playlist_id = os.environ["SPOTIFY_PLAYLIST_ID"]
-    print(f"\nA obter items actuais da playlist {playlist_id}...")
+    # 5. Limpar e repopular playlist
+    playlist_id  = os.environ["SPOTIFY_PLAYLIST_ID"]
     current_uris = get_current_items(token, playlist_id)
-    print(f"  {len(current_uris)} items actuais a remover...")
     if current_uris:
         clear_playlist(token, playlist_id, current_uris)
-        print("  Playlist limpa \u2713")
-
-    # 6. Adicionar novos tracks
-    print("A adicionar novos tracks...")
     add_items(token, playlist_id, uris)
     print("Playlist atualizada com sucesso! \u2713")
+
+    # 6. Job Summary
+    now = datetime.datetime.utcnow().strftime("%d/%m/%Y %H:%M UTC")
+    playlist_url = f"https://open.spotify.com/playlist/{playlist_id}"
+    summary = [
+        "## \U0001f3b5 RFM Top 25 \u2192 Spotify",
+        f"> Atualizado em **{now}** &nbsp;\u2014&nbsp; [{playlist_id}]({playlist_url})",
+        "",
+        f"**{len(uris)}/{len(tracks)} tracks** adicionados com sucesso.",
+        "",
+        "| # | Artista | M\u00fasica | Estado |",
+        "|---|---|---|---|",
+    ]
+    for t in tracks:
+        found = not any(nf["position"] == t["position"] for nf in not_found)
+        estado = "\u2705" if found else "\u274c n\u00e3o encontrado"
+        summary.append(f"| {t['position']} | {t['artist']} | {t['title']} | {estado} |")
+
+    if not_found:
+        summary += [
+            "",
+            f"\u26a0\ufe0f {len(not_found)} track(s) n\u00e3o encontrados no Spotify.",
+        ]
+
+    write_summary(summary)
 
 
 if __name__ == "__main__":
