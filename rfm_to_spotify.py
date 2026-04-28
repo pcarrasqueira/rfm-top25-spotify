@@ -23,6 +23,24 @@ SPOTIFY_PLAYLIST_URL = "https://api.spotify.com/v1/playlists/{id}/tracks"
 RFM_URL = "https://rfm.pt/top25rfm"
 
 
+def spotify_request(method: str, url: str, token: str, **kwargs) -> requests.Response:
+    """Wrapper para pedidos à API Spotify com logging de erros detalhado."""
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+    resp = requests.request(method, url, headers=headers, timeout=15, **kwargs)
+    if not resp.ok:
+        print(f"  HTTP {resp.status_code} {method} {url}")
+        try:
+            err = resp.json()
+            print(f"  Spotify error: {err.get('error', {}).get('message', resp.text[:300])}")
+        except Exception:
+            print(f"  Resposta: {resp.text[:300]}")
+        resp.raise_for_status()
+    return resp
+
+
 def get_access_token() -> str:
     """Troca o refresh token por um access token."""
     client_id = os.environ["SPOTIFY_CLIENT_ID"]
@@ -38,7 +56,10 @@ def get_access_token() -> str:
         auth=(client_id, client_secret),
         timeout=15,
     )
-    resp.raise_for_status()
+    if not resp.ok:
+        print(f"  HTTP {resp.status_code} ao obter token")
+        print(f"  Resposta: {resp.text[:300]}")
+        resp.raise_for_status()
     return resp.json()["access_token"]
 
 
@@ -73,22 +94,18 @@ def scrape_rfm_top25() -> list[dict]:
 
 def search_spotify(token: str, artist: str, title: str) -> str | None:
     """Devolve o URI do track mais relevante no Spotify."""
-    headers = {"Authorization": f"Bearer {token}"}
-
-    # Pesquisa precisa primeiro
     params = {
         "q": f"track:{title} artist:{artist}",
         "type": "track",
         "limit": 5,
         "market": "PT",
     }
-    resp = requests.get(SPOTIFY_SEARCH_URL, headers=headers, params=params, timeout=15)
+    resp = spotify_request("GET", SPOTIFY_SEARCH_URL, token, params=params)
     if resp.status_code == 429:
         retry_after = int(resp.headers.get("Retry-After", 5))
         print(f"Rate limited — a aguardar {retry_after}s...")
         time.sleep(retry_after)
         return search_spotify(token, artist, title)
-    resp.raise_for_status()
 
     items = resp.json().get("tracks", {}).get("items", [])
     if items:
@@ -96,27 +113,19 @@ def search_spotify(token: str, artist: str, title: str) -> str | None:
 
     # Fallback: pesquisa mais permissiva
     params["q"] = f"{artist} {title}"
-    resp = requests.get(SPOTIFY_SEARCH_URL, headers=headers, params=params, timeout=15)
-    resp.raise_for_status()
+    resp = spotify_request("GET", SPOTIFY_SEARCH_URL, token, params=params)
     items = resp.json().get("tracks", {}).get("items", [])
     return items[0]["uri"] if items else None
 
 
 def replace_playlist(token: str, playlist_id: str, uris: list[str]) -> None:
     """Substitui TODOS os tracks da playlist pelos novos URIs."""
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-    }
     url = SPOTIFY_PLAYLIST_URL.format(id=playlist_id)
-
-    resp = requests.put(url, headers=headers, json={"uris": uris[:100]}, timeout=15)
-    resp.raise_for_status()
+    spotify_request("PUT", url, token, json={"uris": uris[:100]})
 
     for batch_start in range(100, len(uris), 100):
         batch = uris[batch_start: batch_start + 100]
-        resp = requests.post(url, headers=headers, json={"uris": batch}, timeout=15)
-        resp.raise_for_status()
+        spotify_request("POST", url, token, json={"uris": batch})
 
 
 def main() -> None:
