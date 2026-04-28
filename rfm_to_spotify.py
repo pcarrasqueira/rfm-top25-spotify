@@ -3,9 +3,11 @@
 Scrapa o RFM Top 25 em https://rfm.pt/top25rfm
 e atualiza a playlist Spotify indicada.
 
-Nota: Em Fevereiro de 2026 a Spotify removeu os endpoints /playlists/{id}/tracks
-e substituiu por /playlists/{id}/items. O DELETE espera {"uris": [...]} e não {"tracks": [...]}.
-A pesquisa via GET /search tem agora limit máximo de 10.
+Nota API Spotify (Fev 2026):
+  - GET/POST/DELETE usam /playlists/{id}/items (o antigo /tracks foi removido)
+  - DELETE espera body: {"items": [{"uri": "spotify:track:xxx"}, ...]}
+  - PUT /playlists/{id}/items com {"uris": [...]} substitui todos os items de uma vez (max 100)
+  - GET /search tem limit máximo de 10
 """
 
 import os
@@ -15,11 +17,11 @@ import datetime
 import requests
 from bs4 import BeautifulSoup
 
-SPOTIFY_TOKEN_URL       = "https://accounts.spotify.com/api/token"
-SPOTIFY_SEARCH_URL      = "https://api.spotify.com/v1/search"
-SPOTIFY_PLAYLIST_ITEMS  = "https://api.spotify.com/v1/playlists/{id}/items"
-SPOTIFY_ME_URL          = "https://api.spotify.com/v1/me"
-RFM_URL                 = "https://rfm.pt/top25rfm"
+SPOTIFY_TOKEN_URL      = "https://accounts.spotify.com/api/token"
+SPOTIFY_SEARCH_URL     = "https://api.spotify.com/v1/search"
+SPOTIFY_PLAYLIST_ITEMS = "https://api.spotify.com/v1/playlists/{id}/items"
+SPOTIFY_ME_URL         = "https://api.spotify.com/v1/me"
+RFM_URL                = "https://rfm.pt/top25rfm"
 
 
 def write_summary(lines: list[str]) -> None:
@@ -89,38 +91,23 @@ def search_spotify(token: str, artist: str, title: str) -> str | None:
     items = resp.json().get("tracks", {}).get("items", [])
     if items:
         return items[0]["uri"]
+    # fallback: pesquisa simples
     params["q"] = f"{artist} {title}"
     resp  = spotify_request("GET", SPOTIFY_SEARCH_URL, token, params=params)
     items = resp.json().get("tracks", {}).get("items", [])
     return items[0]["uri"] if items else None
 
 
-def get_current_items(token: str, playlist_id: str) -> list[str]:
-    url    = SPOTIFY_PLAYLIST_ITEMS.format(id=playlist_id)
-    uris   = []
-    params = {"fields": "next,items(item(uri))", "limit": 100}
-    while url:
-        resp = spotify_request("GET", url, token, params=params)
-        data = resp.json()
-        for entry in data.get("items", []):
-            item = entry.get("item")
-            if item and item.get("uri"):
-                uris.append(item["uri"])
-        url    = data.get("next")
-        params = {}
-    return uris
-
-
-def clear_playlist(token: str, playlist_id: str, uris: list[str]) -> None:
-    """Remove tracks da playlist. O endpoint /items espera {"uris": [...]}."""
+def replace_playlist(token: str, playlist_id: str, uris: list[str]) -> None:
+    """Substitui o conteudo completo da playlist usando PUT (max 100 tracks).
+    Para mais de 100 tracks: PUT com os primeiros 100, POST com o resto.
+    O Top 25 cabe sempre num unico PUT.
+    """
     url = SPOTIFY_PLAYLIST_ITEMS.format(id=playlist_id)
-    for i in range(0, len(uris), 100):
-        spotify_request("DELETE", url, token, json={"uris": uris[i:i + 100]})
-
-
-def add_items(token: str, playlist_id: str, uris: list[str]) -> None:
-    url = SPOTIFY_PLAYLIST_ITEMS.format(id=playlist_id)
-    for i in range(0, len(uris), 100):
+    # PUT substitui tudo de uma vez (até 100 uris)
+    spotify_request("PUT", url, token, json={"uris": uris[:100]})
+    # Se houver mais de 100 (improvável no Top 25), adiciona o resto
+    for i in range(100, len(uris), 100):
         spotify_request("POST", url, token, json={"uris": uris[i:i + 100], "position": i})
         time.sleep(0.2)
 
@@ -164,13 +151,10 @@ def main() -> None:
         print("ERRO: Nenhum track encontrado no Spotify.")
         sys.exit(1)
 
-    # 5. Limpar e repopular playlist
-    playlist_id  = os.environ["SPOTIFY_PLAYLIST_ID"]
-    current_uris = get_current_items(token, playlist_id)
-    if current_uris:
-        print(f"\nA limpar {len(current_uris)} tracks existentes...")
-        clear_playlist(token, playlist_id, current_uris)
-    add_items(token, playlist_id, uris)
+    # 5. Substituir playlist (PUT em vez de DELETE + POST)
+    playlist_id = os.environ["SPOTIFY_PLAYLIST_ID"]
+    print(f"\nA substituir playlist com {len(uris)} tracks...")
+    replace_playlist(token, playlist_id, uris)
     print("Playlist atualizada com sucesso! ✓")
 
     # 6. Job Summary
