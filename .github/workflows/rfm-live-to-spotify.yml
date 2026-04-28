@@ -4,10 +4,7 @@ run-name: "RFM Live → Spotify | ${{ github.event_name == 'workflow_dispatch' &
 
 on:
   schedule:
-    - cron: '0 7 * * *'   # 08:00 Lisboa (manhã)
-    - cron: '0 11 * * *'  # 12:00 Lisboa (almoço)
-    - cron: '0 16 * * *'  # 17:00 Lisboa (tarde)
-    - cron: '0 21 * * *'  # 22:00 Lisboa (noite)
+    - cron: '0 * * * *'  # hora a hora
   workflow_dispatch:
 
 jobs:
