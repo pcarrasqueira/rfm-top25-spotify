@@ -3,6 +3,10 @@
 Scrapa o historial de musicas tocadas na RFM (rfm.pt/que-musica-era)
 e adiciona as novas a uma playlist Spotify, mantendo um limite de 100 tracks
 e sem duplicados. Corre hora a hora via GitHub Actions.
+
+Nota API Spotify (Fev 2026):
+  - DELETE /playlists/{id}/items espera body: {"items": [{"uri": "spotify:track:xxx"}, ...]}
+  - POST /playlists/{id}/items espera body: {"uris": [...], "position": 0}
 """
 
 import os
@@ -100,20 +104,21 @@ def get_playlist_items(token: str, playlist_id: str) -> list[dict]:
 
 
 def remove_items(token: str, playlist_id: str, uris: list[str]) -> None:
+    """Remove tracks da playlist. O endpoint /items espera {"items": [{"uri": ...}]}."""
     url = SPOTIFY_PLAYLIST_ITEMS.format(id=playlist_id)
     for i in range(0, len(uris), 100):
-        spotify("DELETE", url, token, json={"tracks": [{"uri": u} for u in uris[i:i+100]]})
+        spotify("DELETE", url, token, json={"items": [{"uri": u} for u in uris[i:i + 100]]})
 
 
 def add_items(token: str, playlist_id: str, uris: list[str]) -> None:
     url = SPOTIFY_PLAYLIST_ITEMS.format(id=playlist_id)
     for i in range(0, len(uris), 100):
-        spotify("POST", url, token, json={"uris": uris[i:i+100], "position": 0})
+        spotify("POST", url, token, json={"uris": uris[i:i + 100], "position": 0})
         time.sleep(0.2)
 
 
 def main() -> None:
-    print("=== RFM Live \u2192 Spotify ===")
+    print("=== RFM Live → Spotify ===")
 
     # 1. Scrape hora actual
     print("\nA recolher tracks actuais da RFM...")
@@ -123,7 +128,7 @@ def main() -> None:
         sys.exit(0)
     print(f"  {len(raw_tracks)} tracks encontrados:")
     for t in raw_tracks:
-        print(f"    - {t['artist']} \u2014 {t['title']}")
+        print(f"    - {t['artist']} — {t['title']}")
 
     # 2. Auth
     print("\nA autenticar no Spotify...")
@@ -146,14 +151,14 @@ def main() -> None:
     for t in raw_tracks:
         uri = search_track(token, t["artist"], t["title"])
         if not uri:
-            print(f"  \u2717 {t['artist']} \u2014 {t['title']} (n\u00e3o encontrado)")
+            print(f"  ✗ {t['artist']} — {t['title']} (não encontrado)")
             not_found.append(t)
             continue
         if uri in current_set:
-            print(f"  = {t['artist']} \u2014 {t['title']} (j\u00e1 existe)")
+            print(f"  = {t['artist']} — {t['title']} (já existe)")
             skipped.append(t)
             continue
-        print(f"  \u2713 {t['artist']} \u2014 {t['title']} (novo)")
+        print(f"  ✓ {t['artist']} — {t['title']} (novo)")
         new_uris.append(uri)
         added.append(t)
 
@@ -165,12 +170,12 @@ def main() -> None:
             overflow  = total_after - PLAYLIST_LIMIT
             to_remove = current_uris[-overflow:]
             removed_count = len(to_remove)
-            print(f"\n  Limite atingido \u2014 a remover {removed_count} tracks antigos")
+            print(f"\n  Limite atingido — a remover {removed_count} tracks antigos")
             remove_items(token, playlist_id, to_remove)
 
         print(f"\nA adicionar {len(new_uris)} tracks novos...")
         add_items(token, playlist_id, new_uris)
-        print("Playlist atualizada com sucesso! \u2713")
+        print("Playlist atualizada com sucesso! ✓")
     else:
         print("\nNenhum track novo para adicionar.")
 
@@ -179,29 +184,29 @@ def main() -> None:
     playlist_url = f"https://open.spotify.com/playlist/{playlist_id}"
 
     summary = [
-        "## \U0001f4fb \u00daltimas no Ar \u2014 RFM Live \u2192 Spotify",
-        f"> Atualizado em **{now}** &nbsp;\u2014&nbsp; [{playlist_id}]({playlist_url})",
+        "## 📻 Últimas no Ar — RFM Live → Spotify",
+        f"> Atualizado em **{now}** &nbsp;—&nbsp; [{playlist_id}]({playlist_url})",
         "",
     ]
 
     if added:
         summary += [
-            f"### \u2705 {len(added)} track(s) adicionados",
+            f"### ✅ {len(added)} track(s) adicionados",
             "",
-            "| Artista | M\u00fasica |",
+            "| Artista | Música |",
             "|---|---|",
         ]
         for t in added:
             summary.append(f"| {t['artist']} | {t['title']} |")
         summary.append("")
     else:
-        summary += ["### \u2139\ufe0f Sem tracks novos nesta hora", ""]
+        summary += ["### ℹ️ Sem tracks novos nesta hora", ""]
 
     if skipped:
         summary += [
-            f"<details><summary>= {len(skipped)} j\u00e1 existentes (clica para ver)</summary>",
+            f"<details><summary>= {len(skipped)} já existentes (clica para ver)</summary>",
             "",
-            "| Artista | M\u00fasica |",
+            "| Artista | Música |",
             "|---|---|",
         ]
         for t in skipped:
@@ -210,14 +215,14 @@ def main() -> None:
 
     if not_found:
         summary += [
-            f"\u26a0\ufe0f {len(not_found)} track(s) n\u00e3o encontrados no Spotify:",
+            f"⚠️ {len(not_found)} track(s) não encontrados no Spotify:",
         ]
         for t in not_found:
-            summary.append(f"- {t['artist']} \u2014 {t['title']}")
+            summary.append(f"- {t['artist']} — {t['title']}")
         summary.append("")
 
     if removed_count:
-        summary.append(f"\U0001f5d1\ufe0f {removed_count} track(s) antigos removidos para manter limite de {PLAYLIST_LIMIT}.")
+        summary.append(f"🗑️ {removed_count} track(s) antigos removidos para manter limite de {PLAYLIST_LIMIT}.")
 
     write_summary(summary)
 
