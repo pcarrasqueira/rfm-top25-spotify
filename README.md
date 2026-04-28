@@ -1,5 +1,8 @@
 # RFM → Spotify
 
+[![RFM Top 25 → Spotify](https://github.com/pcarrasqueira/rfm-top25-spotify/actions/workflows/rfm-to-spotify.yml/badge.svg)](https://github.com/pcarrasqueira/rfm-top25-spotify/actions/workflows/rfm-to-spotify.yml)
+[![Últimas no Ar → Spotify](https://github.com/pcarrasqueira/rfm-top25-spotify/actions/workflows/rfm-live-to-spotify.yml/badge.svg)](https://github.com/pcarrasqueira/rfm-top25-spotify/actions/workflows/rfm-live-to-spotify.yml)
+
 Dois workflows que sincronizam conteúdo da RFM com playlists Spotify.
 
 | Workflow | Playlist | Frequência |
@@ -85,7 +88,7 @@ python rfm_live_to_spotify.py
 
 ## Notas técnicas
 
-- **API Spotify (Fev 2026)**: os endpoints `/playlists/{id}/tracks` foram removidos e substituídos por `/playlists/{id}/items`. Ambos os scripts usam os endpoints novos.
+- **API Spotify (Fev 2026)**: os endpoints `/playlists/{id}/tracks` foram removidos e substituídos por `/playlists/{id}/items`. O DELETE usa `{"uris": [...]}` (não `{"tracks": [...]}`). Ambos os scripts usam os endpoints novos.
 - **Scraping RFM**: ambas as páginas (`/top25rfm` e `/que-musica-era`) devolvem HTML estático — sem necessidade de headless browser. O `/que-musica-era` ignora parâmetros de hora via URL (os dropdowns são JS), por isso o script recolhe sempre a hora actual.
 - **Refresh Token**: não expira, a não ser que revogues o acesso em [spotify.com/account/apps](https://www.spotify.com/account/apps) ou mudes a password.
 - **GitHub Actions (plano gratuito)**: 2000 min/mês. O workflow hora-a-hora usa ~360 min/mês, bem dentro do limite.
