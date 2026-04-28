@@ -1,0 +1,30 @@
+name: RFM Live → Spotify
+
+on:
+  schedule:
+    - cron: '0 7 * * *'   # 08:00 Lisboa (manhã)
+    - cron: '0 11 * * *'  # 12:00 Lisboa (almoço)
+    - cron: '0 16 * * *'  # 17:00 Lisboa (tarde)
+    - cron: '0 21 * * *'  # 22:00 Lisboa (noite)
+  workflow_dispatch:
+
+jobs:
+  update-playlist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run script
+        env:
+          SPOTIFY_CLIENT_ID:     ${{ secrets.SPOTIFY_CLIENT_ID }}
+          SPOTIFY_CLIENT_SECRET: ${{ secrets.SPOTIFY_CLIENT_SECRET }}
+          SPOTIFY_REFRESH_TOKEN: ${{ secrets.SPOTIFY_REFRESH_TOKEN }}
+          SPOTIFY_LIVE_PLAYLIST_ID: ${{ secrets.SPOTIFY_LIVE_PLAYLIST_ID }}
+        run: python rfm_live_to_spotify.py
