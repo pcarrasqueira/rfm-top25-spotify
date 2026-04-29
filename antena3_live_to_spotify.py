@@ -24,7 +24,7 @@ SPOTIFY_PLAYLIST_ITEMS = "https://api.spotify.com/v1/playlists/{id}/items"
 ANTENA3_URL            = "https://antena3.rtp.pt/ja-tocou/"
 EPG_URL                = "https://www.rtp.pt/EPG/json/rtp-channels-page/list-grid/radio/3/{date}"
 PLAYLIST_LIMIT         = 300
-WINDOW_HOURS           = 3
+WINDOW_HOURS           = 24
 TIME_RE                = re.compile(r"^\d{1,2}:\d{2}$")
 
 
