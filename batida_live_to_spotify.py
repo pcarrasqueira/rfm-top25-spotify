@@ -1,10 +1,23 @@
 #!/usr/bin/env python3
 """
 Recolhe as musicas tocadas na Batida FM nas ultimas 3h via API JSON:
-  https://listenapi.planetradio.co.uk/api9.2/events/bfm/{datetime}/{hours}
+  https://listenapi.planetradio.co.uk/api9.2/events/bfm/{datetime}/{count}
+
+Nota: o ultimo parametro e o NUMERO DE EVENTOS a devolver (nao horas).
+Pedimos 100 e filtramos por janela temporal localmente.
+
+Estrutura da resposta (array de eventos):
+  [
+    {
+      "nowPlayingTrack":  "Woman",
+      "nowPlayingArtist": "Little Simz",
+      "nowPlayingTime":   "2026-04-29 23:29:30",
+      ...
+    },
+    ...
+  ]
 """
 
-import json
 import os
 import sys
 import time
@@ -15,7 +28,8 @@ from urllib.parse import quote
 SPOTIFY_TOKEN_URL      = "https://accounts.spotify.com/api/token"
 SPOTIFY_SEARCH_URL     = "https://api.spotify.com/v1/search"
 SPOTIFY_PLAYLIST_ITEMS = "https://api.spotify.com/v1/playlists/{id}/items"
-PLANETRADIO_API        = "https://listenapi.planetradio.co.uk/api9.2/events/bfm/{datetime}/{hours}"
+PLANETRADIO_API        = "https://listenapi.planetradio.co.uk/api9.2/events/bfm/{datetime}/{count}"
+API_EVENT_COUNT        = 100   # numero de eventos a pedir (nao e horas)
 PLAYLIST_LIMIT         = 300
 WINDOW_HOURS           = 3
 
@@ -63,7 +77,7 @@ def fetch_tracks() -> list[dict]:
     dt_str  = lisbon_now.strftime("%Y-%m-%d %H:%M:%S")
     api_url = PLANETRADIO_API.format(
         datetime=quote(dt_str, safe=""),
-        hours=WINDOW_HOURS,
+        count=API_EVENT_COUNT,
     )
     print(f"  Janela: {cutoff.strftime('%H:%M')} - {lisbon_now.strftime('%H:%M')} Lisboa")
     print(f"  URL: {api_url}")
@@ -72,40 +86,22 @@ def fetch_tracks() -> list[dict]:
     resp.raise_for_status()
 
     data = resp.json()
-    if isinstance(data, dict):
-        events = data.get("events") or data.get("Events") or []
-    else:
-        events = data
+    events = data if isinstance(data, list) else (
+        data.get("events") or data.get("Events") or []
+    )
 
     print(f"  {len(events)} eventos recebidos da API")
 
-    # DEBUG: mostrar estrutura dos primeiros 2 eventos para identificar campos reais
-    if events:
-        print("  [DEBUG] Primeiros 2 eventos (raw):")
-        print(json.dumps(events[:2], indent=4, ensure_ascii=False))
-
     seen, tracks = set(), []
     for ev in events:
-        ev_type = (ev.get("EventType") or ev.get("eventType") or "").lower()
-        if ev_type and ev_type not in ("music", "song", "track"):
-            continue
-
-        title  = (
-            ev.get("EventSongTitle") or ev.get("eventSongTitle") or
-            ev.get("SongTitle")      or ev.get("songTitle")      or ""
-        ).strip()
-        artist = (
-            ev.get("EventSongArtist") or ev.get("eventSongArtist") or
-            ev.get("SongArtist")      or ev.get("songArtist")      or ""
-        ).strip()
+        title  = (ev.get("nowPlayingTrack")  or "").strip()
+        artist = (ev.get("nowPlayingArtist") or "").strip()
 
         if not title or not artist:
             continue
 
-        start_raw = (
-            ev.get("EventStartTime") or ev.get("eventStartTime") or
-            ev.get("StartTime")      or ""
-        )
+        # Filtrar por janela temporal
+        start_raw = (ev.get("nowPlayingTime") or "")
         if start_raw:
             try:
                 ev_dt = datetime.datetime.strptime(start_raw[:19], "%Y-%m-%d %H:%M:%S")
