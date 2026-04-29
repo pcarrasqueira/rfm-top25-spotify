@@ -4,12 +4,21 @@ Scrapa o historico de musicas tocadas na Radio Comercial (radiocomercial.pt/pass
 e adiciona as novas a uma playlist Spotify, mantendo um limite de 300 tracks
 e sem duplicados. Corre hora a hora via GitHub Actions.
 
+A pagina e renderizada via JS mas o requests consegue obter o texto completo.
+O conteudo tem o padrao:
+  HH:MM
+  Titulo da Musica
+  Artista
+  HH:MM
+  ...
+
 Nota API Spotify:
   - DELETE /playlists/{id}/items espera body: {"items": [{"uri": "spotify:track:xxx"}, ...]}
   - POST /playlists/{id}/items espera body: {"uris": [...], "position": 0}
 """
 
 import os
+import re
 import sys
 import time
 import datetime
@@ -21,6 +30,11 @@ SPOTIFY_SEARCH_URL     = "https://api.spotify.com/v1/search"
 SPOTIFY_PLAYLIST_ITEMS = "https://api.spotify.com/v1/playlists/{id}/items"
 COMERCIAL_PASSOU_URL   = "https://radiocomercial.pt/passou"
 PLAYLIST_LIMIT         = 300
+
+# Padrao de hora: HH:MM no inicio de linha
+TIME_RE = re.compile(r'^\d{2}:\d{2}$')
+# Linha de duracao: 00:00 ou similar no fim de cada entrada
+DURATION_RE = re.compile(r'^\d{2}:\d{2}$')
 
 
 def write_summary(lines: list[str]) -> None:
@@ -55,17 +69,20 @@ def scrape_passou() -> list[dict]:
     """
     Raspa radiocomercial.pt/passou.
 
-    A pagina lista as ultimas musicas tocadas na antena.
-    Estrutura HTML (confirmada Abril 2026):
-      <div class="historyMusic">
-        <div class="songTitle">Titulo</div>
-        <div class="songArtist">Artista</div>
-      </div>
+    A pagina lista as ultimas musicas tocadas na antena num bloco de texto
+    com o padrao:
+      HH:MM
+      Titulo
+      Artista
+      00:00   <- duracao (ignorar)
 
-    Fallback: qualquer div com as classes songTitle + songArtist no mesmo pai.
+    Estrategia:
+    1. Obter HTML com requests
+    2. Extrair texto completo com BeautifulSoup
+    3. Partir o texto em linhas e identificar grupos HH:MM + Titulo + Artista
     """
     headers = {
-        "User-Agent": "Mozilla/5.0 (compatible; comercial-live-bot/1.0)",
+        "User-Agent": "Mozilla/5.0 (compatible; comercial-live-bot/2.0)",
         "Accept-Language": "pt-PT,pt;q=0.9",
     }
     try:
@@ -75,38 +92,51 @@ def scrape_passou() -> list[dict]:
         print(f"  Erro ao scrape Comercial: {e}")
         return []
 
-    soup   = BeautifulSoup(resp.text, "lxml")
+    soup = BeautifulSoup(resp.text, "lxml")
+
+    # Extrair texto do body todo, linha a linha, limpo
+    raw_text = soup.get_text(separator="\n")
+    lines = [l.strip() for l in raw_text.splitlines() if l.strip()]
+
     tracks = []
     seen   = set()
+    i      = 0
 
-    # Tentativa 1: divs historyMusic com songTitle/songArtist
-    for block in soup.find_all("div", class_="historyMusic"):
-        title_el  = block.find(class_="songTitle")
-        artist_el = block.find(class_="songArtist")
-        if title_el and artist_el:
-            title  = title_el.get_text(strip=True)
-            artist = artist_el.get_text(strip=True)
-            if title and artist:
-                key = (artist.upper(), title.upper())
-                if key not in seen:
-                    seen.add(key)
-                    tracks.append({"artist": artist, "title": title})
+    while i < len(lines):
+        line = lines[i]
+        # Procurar linha de hora (HH:MM)
+        if re.match(r'^\d{1,2}:\d{2}$', line):
+            # A seguir deve vir o titulo e depois o artista
+            # Saltar possiveis linhas de duracao (00:00) ou horas repetidas
+            j = i + 1
+            # Recolher as proximas linhas nao-hora e nao-00:00
+            candidates = []
+            while j < len(lines) and len(candidates) < 2:
+                next_line = lines[j]
+                # Ignorar horas, duracoes (00:00) e linhas vazias
+                if re.match(r'^\d{1,2}:\d{2}$', next_line):
+                    break
+                candidates.append(next_line)
+                j += 1
 
-    # Fallback: procurar songTitle/songArtist em qualquer container
-    if not tracks:
-        title_divs = soup.find_all(class_="songTitle")
-        for td in title_divs:
-            parent    = td.parent
-            artist_el = parent.find(class_="songArtist") if parent else None
-            if not artist_el:
+            if len(candidates) >= 2:
+                title  = candidates[0]
+                artist = candidates[1]
+                # Ignorar linhas que parecem navegacao/metadata
+                skip_words = {"procurar", "ouvir", "podcasts", "passou", "videos",
+                              "programas", "destaques", "noticias", "somos nos",
+                              "tnt", "nas radios", "escolha", "hoje", "ontem"}
+                if (title.lower() not in skip_words
+                        and artist.lower() not in skip_words
+                        and len(title) > 1
+                        and len(artist) > 1):
+                    key = (artist.upper(), title.upper())
+                    if key not in seen:
+                        seen.add(key)
+                        tracks.append({"artist": artist, "title": title})
+                i = j
                 continue
-            title  = td.get_text(strip=True)
-            artist = artist_el.get_text(strip=True)
-            if title and artist:
-                key = (artist.upper(), title.upper())
-                if key not in seen:
-                    seen.add(key)
-                    tracks.append({"artist": artist, "title": title})
+        i += 1
 
     return tracks
 
