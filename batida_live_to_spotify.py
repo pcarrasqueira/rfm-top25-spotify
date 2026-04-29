@@ -3,16 +3,12 @@
 Recolhe as musicas tocadas na Batida FM na ultima 1h via API JSON:
   https://listenapi.planetradio.co.uk/api9.2/events/bfm/{datetime}/{count}
 
-Nota: o ultimo parametro e o NUMERO DE EVENTOS a devolver (nao horas).
-Pedimos 100 e filtramos por janela temporal localmente.
-
 Estrutura da resposta (array de eventos):
   [
     {
       "nowPlayingTrack":  "Woman",
       "nowPlayingArtist": "Little Simz",
       "nowPlayingTime":   "2026-04-29 23:29:30",  <- hora de Lisboa (WEST)
-      ...
     },
     ...
   ]
@@ -33,7 +29,6 @@ PLANETRADIO_API        = "https://listenapi.planetradio.co.uk/api9.2/events/bfm/
 API_EVENT_COUNT        = 100
 PLAYLIST_LIMIT         = 300
 WINDOW_HOURS           = 1
-MAX_RETRIES            = 5
 LISBON_TZ              = ZoneInfo("Europe/Lisbon")
 
 
@@ -57,20 +52,11 @@ def get_access_token() -> str:
 
 
 def spotify(method: str, url: str, token: str, **kwargs) -> requests.Response:
-    """Executa um pedido ao Spotify com retry automatico em caso de 429."""
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    for attempt in range(MAX_RETRIES):
-        resp = requests.request(method, url, headers=headers, timeout=15, **kwargs)
-        if resp.status_code == 429:
-            retry_after = int(resp.headers.get("Retry-After", 2 ** attempt))
-            print(f"  [429] Rate limit. A aguardar {retry_after}s (tentativa {attempt + 1}/{MAX_RETRIES})...")
-            time.sleep(retry_after)
-            continue
-        if not resp.ok:
-            print(f"  HTTP {resp.status_code} {method} {url}: {resp.text[:300]}")
-            resp.raise_for_status()
-        return resp
-    resp.raise_for_status()
+    resp = requests.request(method, url, headers=headers, timeout=15, **kwargs)
+    if not resp.ok:
+        print(f"  HTTP {resp.status_code} {method} {url}: {resp.text[:300]}")
+        resp.raise_for_status()
     return resp
 
 
@@ -81,7 +67,6 @@ def fetch_tracks() -> list[dict]:
         "Origin": "https://rayo.pt",
         "Referer": "https://rayo.pt/",
     }
-    # hora actual em Lisboa (trata DST automaticamente: WEST=UTC+1, WET=UTC+0)
     lisbon_now = datetime.datetime.now(LISBON_TZ)
     cutoff     = lisbon_now - datetime.timedelta(hours=WINDOW_HOURS)
 
@@ -96,11 +81,10 @@ def fetch_tracks() -> list[dict]:
     resp = requests.get(api_url, headers=headers, timeout=20)
     resp.raise_for_status()
 
-    data = resp.json()
+    data   = resp.json()
     events = data if isinstance(data, list) else (
         data.get("events") or data.get("Events") or []
     )
-
     print(f"  {len(events)} eventos recebidos da API")
 
     seen, tracks = set(), []
@@ -109,12 +93,10 @@ def fetch_tracks() -> list[dict]:
         artist = (ev.get("nowPlayingArtist") or "").strip()
         if not title or not artist:
             continue
-        # nowPlayingTime esta em hora de Lisboa (naive) - comparar directamente
         start_raw = (ev.get("nowPlayingTime") or "")
         if start_raw:
             try:
-                ev_dt = datetime.datetime.strptime(start_raw[:19], "%Y-%m-%d %H:%M:%S")
-                ev_dt = ev_dt.replace(tzinfo=LISBON_TZ)
+                ev_dt = datetime.datetime.strptime(start_raw[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=LISBON_TZ)
                 if ev_dt < cutoff:
                     continue
             except ValueError:
@@ -135,7 +117,7 @@ def search_track(token: str, artist: str, title: str) -> str | None:
         items = resp.json().get("tracks", {}).get("items", [])
         if items:
             return items[0]["uri"]
-        time.sleep(0.1)
+        time.sleep(0.05)
     return None
 
 
