@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
 """
-Scrapa o historico de musicas tocadas na Radio Comercial (radiocomercial.pt/passou)
-e adiciona as novas a uma playlist Spotify, mantendo um limite de 300 tracks
-e sem duplicados. Corre hora a hora via GitHub Actions.
+Recolhe o historico de musicas tocadas na Radio Comercial via API JSON oficial:
+  https://radiocomercial.pt/now_playing_logs/json/radio-comercial_YYYY-MM-DD.json
 
-Formato real da pagina (confirmado Abril 2026):
-  O texto extraido tem o padrao:
-    HH:MM  \n  Titulo  \n  Artista00:00  \n  HH:MM  \n  ...
-  Ou seja, a duracao (00:00) esta colada ao nome do artista na mesma linha.
+Adiciona as novas musicas a uma playlist Spotify, mantendo um limite de 300 tracks
+e sem duplicados. Corre hora a hora via GitHub Actions.
 
 Nota API Spotify:
   - DELETE /playlists/{id}/items espera body: {"items": [{"uri": "spotify:track:xxx"}, ...]}
@@ -15,23 +12,16 @@ Nota API Spotify:
 """
 
 import os
-import re
 import sys
 import time
 import datetime
 import requests
-from bs4 import BeautifulSoup
 
 SPOTIFY_TOKEN_URL      = "https://accounts.spotify.com/api/token"
 SPOTIFY_SEARCH_URL     = "https://api.spotify.com/v1/search"
 SPOTIFY_PLAYLIST_ITEMS = "https://api.spotify.com/v1/playlists/{id}/items"
-COMERCIAL_PASSOU_URL   = "https://radiocomercial.pt/passou"
+COMERCIAL_LOG_URL      = "https://radiocomercial.pt/now_playing_logs/json/radio-comercial_{date}.json"
 PLAYLIST_LIMIT         = 300
-
-# Duracao colada ao artista: "Artista00:00" ou "Artista02:39"
-DURATION_SUFFIX = re.compile(r'\d{2}:\d{2}$')
-# Hora de emissao: linha que e so HH:MM
-TIME_LINE = re.compile(r'^\d{1,2}:\d{2}$')
 
 
 def write_summary(lines: list[str]) -> None:
@@ -62,75 +52,50 @@ def spotify(method: str, url: str, token: str, **kwargs) -> requests.Response:
     return resp
 
 
-def scrape_passou() -> list[dict]:
+def fetch_tracks() -> list[dict]:
     """
-    Raspa radiocomercial.pt/passou.
-
-    O texto da pagina tem o padrao:
-      HH:MM
-      Titulo da Musica
-      NomeDoArtista00:00   <- duracao colada ao artista
-      HH:MM
-      ...
-
-    Estrategia:
-    1. Extrair texto completo com BeautifulSoup
-    2. Limpar cada linha: remover sufixo de duracao (XX:XX no final)
-    3. Iterar em grupos de 3 linhas apos cada hora (HH:MM)
+    Recolhe musicas do dia actual (e do dia anterior para agarrar a madrugada).
+    Devolve lista de dicts {artist, title} sem duplicados, ordenada por hora desc.
     """
     headers = {
-        "User-Agent": "Mozilla/5.0 (compatible; comercial-live-bot/2.0)",
-        "Accept-Language": "pt-PT,pt;q=0.9",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+        "Referer": "https://radiocomercial.pt/passou",
+        "X-Requested-With": "XMLHttpRequest",
+        "Accept": "application/json, text/javascript, */*; q=0.01",
     }
-    try:
-        resp = requests.get(COMERCIAL_PASSOU_URL, headers=headers, timeout=20)
-        resp.raise_for_status()
-    except Exception as e:
-        print(f"  Erro ao scrape Comercial: {e}")
-        return []
 
-    soup = BeautifulSoup(resp.text, "lxml")
-    raw_text = soup.get_text(separator="\n")
+    today     = datetime.date.today()
+    yesterday = today - datetime.timedelta(days=1)
+    dates     = [today.strftime("%Y-%m-%d"), yesterday.strftime("%Y-%m-%d")]
 
-    # Limpar linhas: strip e remover sufixo de duracao
-    lines = []
-    for raw_line in raw_text.splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        # Remover duracao colada (ex: "Artista00:00" -> "Artista")
-        line = DURATION_SUFFIX.sub("", line).strip()
-        if line:
-            lines.append(line)
-
-    tracks = []
-    seen   = set()
-    i      = 0
-
-    while i < len(lines) - 2:
-        line = lines[i]
-        # Procurar linha de hora de emissao (HH:MM)
-        if TIME_LINE.match(line):
-            title  = lines[i + 1]
-            artist = lines[i + 2]
-            # Validar: titulo e artista nao devem ser horas nem palavras de navegacao
-            skip = {"procurar", "ouvir", "podcasts", "passou", "videos",
-                    "programas", "destaques", "noticias", "somos nos",
-                    "tnt", "nas radios", "escolha", "hoje", "ontem",
-                    "escolha a radio", "escolha o dia", "ouviu quando?", "a que horas?"}
-            if (not TIME_LINE.match(title)
-                    and not TIME_LINE.match(artist)
-                    and title.lower() not in skip
-                    and artist.lower() not in skip
-                    and len(title) > 1
-                    and len(artist) > 1):
-                key = (artist.upper(), title.upper())
-                if key not in seen:
-                    seen.add(key)
-                    tracks.append({"artist": artist, "title": title})
-                i += 3
+    records = []
+    for date_str in dates:
+        url = COMMERCIAL_LOG_URL = COMERCIAL_LOG_URL.format(date=date_str)
+        try:
+            resp = requests.get(url, headers=headers, timeout=20)
+            if resp.status_code == 404:
                 continue
-        i += 1
+            resp.raise_for_status()
+            data = resp.json()
+            day_records = data.get("NOW_PLAYING_LOG", {}).get("NOW_PLAYING_RECORD", [])
+            records.extend(day_records)
+            print(f"  {len(day_records)} registos em {date_str}")
+        except Exception as e:
+            print(f"  Erro ao obter {date_str}: {e}")
+
+    # Extrair artista e titulo, sem duplicados
+    seen   = set()
+    tracks = []
+    for rec in reversed(records):  # mais recente primeiro
+        zenon  = rec.get("ZENON", {})
+        title  = zenon.get("SONG_NAME", "").strip()
+        artist = zenon.get("ARTIST_NAME", "").strip()
+        if not title or not artist:
+            continue
+        key = (artist.upper(), title.upper())
+        if key not in seen:
+            seen.add(key)
+            tracks.append({"artist": artist, "title": title})
 
     return tracks
 
@@ -175,16 +140,18 @@ def add_items(token: str, playlist_id: str, uris: list[str]) -> None:
 
 
 def main() -> None:
-    print("=== Radio Comercial Passou -> Spotify ===")
+    print("=== Radio Comercial Live -> Spotify ===")
 
-    print("\nA recolher tracks de radiocomercial.pt/passou...")
-    raw_tracks = scrape_passou()
+    print("\nA recolher tracks da API da Radio Comercial...")
+    raw_tracks = fetch_tracks()
     if not raw_tracks:
         print("Nenhum track encontrado, a sair.")
         sys.exit(0)
-    print(f"  {len(raw_tracks)} tracks encontrados:")
-    for t in raw_tracks:
+    print(f"  {len(raw_tracks)} tracks unicos encontrados")
+    for t in raw_tracks[:5]:
         print(f"    - {t['artist']} - {t['title']}")
+    if len(raw_tracks) > 5:
+        print(f"    ... e mais {len(raw_tracks) - 5}")
 
     print("\nA autenticar no Spotify...")
     token       = get_access_token()
@@ -204,16 +171,15 @@ def main() -> None:
     for t in raw_tracks:
         uri = search_track(token, t["artist"], t["title"])
         if not uri:
-            print(f"  x {t['artist']} - {t['title']} (nao encontrado)")
             not_found.append(t)
             continue
         if uri in current_set:
-            print(f"  = {t['artist']} - {t['title']} (ja existe)")
             skipped.append(t)
             continue
-        print(f"  + {t['artist']} - {t['title']} (novo)")
         new_uris.append(uri)
         added.append(t)
+
+    print(f"  Novos: {len(added)} | Ja existentes: {len(skipped)} | Nao encontrados: {len(not_found)}")
 
     removed_count = 0
     if new_uris:
@@ -222,7 +188,7 @@ def main() -> None:
             overflow  = total_after - PLAYLIST_LIMIT
             to_remove = current_uris[-overflow:]
             removed_count = len(to_remove)
-            print(f"\n  Limite atingido - a remover {removed_count} tracks antigos")
+            print(f"  Limite atingido - a remover {removed_count} tracks antigos")
             remove_items(token, playlist_id, to_remove)
 
         print(f"\nA adicionar {len(new_uris)} tracks novos...")
@@ -235,7 +201,7 @@ def main() -> None:
     playlist_url = f"https://open.spotify.com/playlist/{playlist_id}"
 
     summary = [
-        "## Radio Comercial Passou -> Spotify",
+        "## Radio Comercial Live -> Spotify",
         f"> Actualizado em **{now}** &nbsp;-&nbsp; [{playlist_id}]({playlist_url})",
         "",
     ]
