@@ -51,10 +51,6 @@ def spotify(method: str, url: str, token: str, **kwargs) -> requests.Response:
 
 
 def fetch_tracks() -> list[dict]:
-    """
-    Busca o JSON do dia actual e filtra os registos das ultimas WINDOW_HOURS horas.
-    O campo DATE esta em hora local de Lisboa (sem timezone).
-    """
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
         "Referer": "https://radiocomercial.pt/passou",
@@ -86,13 +82,11 @@ def fetch_tracks() -> list[dict]:
             continue
         if rec_dt < cutoff:
             continue
-
         zenon  = rec.get("ZENON", {})
         title  = zenon.get("SONG_NAME",  "").strip()
         artist = zenon.get("ARTIST_NAME", "").strip()
         if not title or not artist:
             continue
-
         key = (artist.upper(), title.upper())
         if key not in seen:
             seen.add(key)
@@ -141,6 +135,24 @@ def add_items(token: str, playlist_id: str, uris: list[str]) -> None:
         time.sleep(0.2)
 
 
+def trim_playlist(token: str, playlist_id: str, current_uris: list[str], slots_needed: int) -> tuple[list[str], int]:
+    """
+    Garante que a playlist tem espaco para slots_needed novos tracks.
+    Remove os mais antigos (fim da lista) se necessario.
+    Devolve a lista de uris actualizada e o numero de tracks removidos.
+    """
+    target      = PLAYLIST_LIMIT - slots_needed
+    removed     = 0
+    if len(current_uris) > target:
+        overflow    = len(current_uris) - target
+        to_remove   = current_uris[-overflow:]
+        removed     = len(to_remove)
+        print(f"  A remover {removed} tracks antigos para libertar espaco...")
+        remove_items(token, playlist_id, to_remove)
+        current_uris = current_uris[:-overflow]
+    return current_uris, removed
+
+
 def main() -> None:
     print("=== Radio Comercial Live -> Spotify ===")
 
@@ -184,25 +196,15 @@ def main() -> None:
 
     print(f"\nNovos: {len(added)} | Ja na playlist: {len(skipped)} | Nao encontrados: {len(not_found)}")
 
-    removed_count = 0
+    # Trim sempre -- independente de haver tracks novos ou nao
+    slots_needed  = min(len(new_uris), PLAYLIST_LIMIT)
+    current_uris, removed_count = trim_playlist(token, playlist_id, current_uris, slots_needed)
+
     if new_uris:
-        # Garantir que new_uris nao excede o limite por si so
-        if len(new_uris) > PLAYLIST_LIMIT:
-            print(f"  Trimming new_uris de {len(new_uris)} para {PLAYLIST_LIMIT}")
-            new_uris = new_uris[:PLAYLIST_LIMIT]
-            added    = added[:PLAYLIST_LIMIT]
-
-        # Calcular quantos tracks antigos remover para caber dentro do limite
-        total_after = len(current_uris) + len(new_uris)
-        if total_after > PLAYLIST_LIMIT:
-            overflow      = total_after - PLAYLIST_LIMIT
-            # overflow nunca pode exceder o que existe na playlist
-            overflow      = min(overflow, len(current_uris))
-            to_remove     = current_uris[-overflow:]   # os mais antigos (fim da lista)
-            removed_count = len(to_remove)
-            print(f"  A remover {removed_count} tracks antigos (limite {PLAYLIST_LIMIT})")
-            remove_items(token, playlist_id, to_remove)
-
+        # Limitar new_uris ao espaco disponivel (salvaguarda extra)
+        space    = PLAYLIST_LIMIT - len(current_uris)
+        new_uris = new_uris[:space]
+        added    = added[:space]
         print(f"  A adicionar {len(new_uris)} tracks...")
         add_items(token, playlist_id, new_uris)
         print("Playlist actualizada!")
