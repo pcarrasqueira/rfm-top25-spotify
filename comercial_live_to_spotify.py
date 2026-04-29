@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-Recolhe as ultimas musicas tocadas na Radio Comercial via API JSON oficial:
+Recolhe as musicas tocadas na Radio Comercial nas ultimas 2h via API JSON:
   https://radiocomercial.pt/now_playing_logs/json/radio-comercial_YYYY-MM-DD.json
 
-So processa o dia actual e limita a FETCH_LIMIT tracks mais recentes para
-garantir que o script corre rapido (< 2 min).
+O campo DATE de cada registo esta em hora de Lisboa (Europe/Lisbon).
+Filtramos tudo com DATE >= agora - 2h para corresponder ao intervalo
+entre execucoes hora-a-hora (com margem de 1h extra para sobreposicao).
 """
 
 import os
@@ -18,7 +19,7 @@ SPOTIFY_SEARCH_URL     = "https://api.spotify.com/v1/search"
 SPOTIFY_PLAYLIST_ITEMS = "https://api.spotify.com/v1/playlists/{id}/items"
 COMERCIAL_LOG_URL      = "https://radiocomercial.pt/now_playing_logs/json/radio-comercial_{date}.json"
 PLAYLIST_LIMIT         = 300
-FETCH_LIMIT            = 60   # max tracks a processar por execucao
+WINDOW_HOURS           = 2   # janela de tempo a processar
 
 
 def write_summary(lines: list[str]) -> None:
@@ -50,7 +51,12 @@ def spotify(method: str, url: str, token: str, **kwargs) -> requests.Response:
 
 
 def fetch_tracks() -> list[dict]:
-    """Busca so o dia actual, devolve os FETCH_LIMIT mais recentes sem duplicados."""
+    """
+    Busca o JSON do dia actual e filtra os registos das ultimas WINDOW_HOURS horas.
+    O campo DATE esta em hora local de Lisboa (sem timezone) -- comparamos directamente
+    com datetime.utcnow() + offset de Lisboa (UTC+1 inverno / UTC+2 verao).
+    Como o GitHub Actions corre em UTC, usamos utcnow() e ajustamos.
+    """
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
         "Referer": "https://radiocomercial.pt/passou",
@@ -58,31 +64,47 @@ def fetch_tracks() -> list[dict]:
         "Accept": "application/json, text/javascript, */*; q=0.01",
     }
 
-    date_str = datetime.date.today().strftime("%Y-%m-%d")
+    # Hora actual em Lisboa (WEST=UTC+1, WESZ=UTC+2) -- detectar DST de forma simples
+    # Abril-Outubro = UTC+2 (WESZ), Novembro-Marco = UTC+1 (WET)
+    utc_now    = datetime.datetime.utcnow()
+    month      = utc_now.month
+    lisbon_offset = 2 if 3 < month < 11 else 1   # aproximacao suficiente para este caso
+    lisbon_now = utc_now + datetime.timedelta(hours=lisbon_offset)
+    cutoff     = lisbon_now - datetime.timedelta(hours=WINDOW_HOURS)
+
+    date_str = lisbon_now.strftime("%Y-%m-%d")
     url      = COMERCIAL_LOG_URL.format(date=date_str)
 
     resp = requests.get(url, headers=headers, timeout=20)
     resp.raise_for_status()
     records = resp.json().get("NOW_PLAYING_LOG", {}).get("NOW_PLAYING_RECORD", [])
-    print(f"  {len(records)} registos hoje ({date_str})")
+    print(f"  {len(records)} registos totais hoje ({date_str})")
+    print(f"  Janela: {cutoff.strftime('%H:%M')} - {lisbon_now.strftime('%H:%M')} Lisboa")
 
-    # mais recente primeiro, deduplicado
+    # Filtrar por janela de tempo, mais recente primeiro, sem duplicados
     seen   = set()
     tracks = []
     for rec in reversed(records):
+        date_raw = rec.get("DATE", "")
+        try:
+            rec_dt = datetime.datetime.strptime(date_raw, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            continue
+        if rec_dt < cutoff:
+            continue
+
         zenon  = rec.get("ZENON", {})
         title  = zenon.get("SONG_NAME",  "").strip()
         artist = zenon.get("ARTIST_NAME", "").strip()
         if not title or not artist:
             continue
+
         key = (artist.upper(), title.upper())
         if key not in seen:
             seen.add(key)
             tracks.append({"artist": artist, "title": title})
-        if len(tracks) >= FETCH_LIMIT:
-            break
 
-    print(f"  {len(tracks)} tracks unicos (limite {FETCH_LIMIT})")
+    print(f"  {len(tracks)} tracks unicos nas ultimas {WINDOW_HOURS}h")
     return tracks
 
 
@@ -131,14 +153,20 @@ def main() -> None:
     print("\nA recolher tracks da API...")
     raw_tracks = fetch_tracks()
     if not raw_tracks:
-        print("Nenhum track encontrado, a sair.")
+        print("Nenhum track encontrado na janela de tempo, a sair.")
+        write_summary([
+            "## Radio Comercial Live -> Spotify",
+            f"> {datetime.datetime.utcnow().strftime('%d/%m/%Y %H:%M UTC')}",
+            "",
+            "Sem tracks novos nas ultimas 2h.",
+        ])
         sys.exit(0)
 
     print("\nA autenticar no Spotify...")
     token       = get_access_token()
     playlist_id = os.environ["SPOTIFY_COMERCIAL_LIVE_PLAYLIST_ID"]
 
-    print(f"\nA ler playlist actual...")
+    print("\nA ler playlist actual...")
     current_uris = get_playlist_uris(token, playlist_id)
     current_set  = set(current_uris)
     print(f"  {len(current_uris)} tracks na playlist")
@@ -178,7 +206,6 @@ def main() -> None:
     else:
         print("Nenhum track novo para adicionar.")
 
-    # Job Summary
     now          = datetime.datetime.utcnow().strftime("%d/%m/%Y %H:%M UTC")
     playlist_url = f"https://open.spotify.com/playlist/{playlist_id}"
     summary = [
