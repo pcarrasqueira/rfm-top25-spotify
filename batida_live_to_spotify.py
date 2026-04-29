@@ -2,20 +2,9 @@
 """
 Recolhe as musicas tocadas na Batida FM nas ultimas 3h via API JSON:
   https://listenapi.planetradio.co.uk/api9.2/events/bfm/{datetime}/{hours}
-
-Estrutura da resposta (array de eventos):
-  [
-    {
-      "EventType": "Music",
-      "EventSongTitle": "Song Title",
-      "EventSongArtist": "Artist Name",
-      "EventStartTime": "2026-04-29 23:00:00",
-      ...
-    },
-    ...
-  ]
 """
 
+import json
 import os
 import sys
 import time
@@ -71,7 +60,6 @@ def fetch_tracks() -> list[dict]:
     lisbon_now    = (utc_now + datetime.timedelta(hours=lisbon_offset)).replace(tzinfo=None)
     cutoff        = lisbon_now - datetime.timedelta(hours=WINDOW_HOURS)
 
-    # A API usa a hora de Lisboa no path (URL encoded)
     dt_str  = lisbon_now.strftime("%Y-%m-%d %H:%M:%S")
     api_url = PLANETRADIO_API.format(
         datetime=quote(dt_str, safe=""),
@@ -84,7 +72,6 @@ def fetch_tracks() -> list[dict]:
     resp.raise_for_status()
 
     data = resp.json()
-    # A API pode devolver lista directa ou objecto com chave de eventos
     if isinstance(data, dict):
         events = data.get("events") or data.get("Events") or []
     else:
@@ -92,9 +79,13 @@ def fetch_tracks() -> list[dict]:
 
     print(f"  {len(events)} eventos recebidos da API")
 
+    # DEBUG: mostrar estrutura dos primeiros 2 eventos para identificar campos reais
+    if events:
+        print("  [DEBUG] Primeiros 2 eventos (raw):")
+        print(json.dumps(events[:2], indent=4, ensure_ascii=False))
+
     seen, tracks = set(), []
     for ev in events:
-        # Filtrar apenas eventos musicais
         ev_type = (ev.get("EventType") or ev.get("eventType") or "").lower()
         if ev_type and ev_type not in ("music", "song", "track"):
             continue
@@ -111,7 +102,6 @@ def fetch_tracks() -> list[dict]:
         if not title or not artist:
             continue
 
-        # Verificar janela temporal caso a API nao filtre correctamente
         start_raw = (
             ev.get("EventStartTime") or ev.get("eventStartTime") or
             ev.get("StartTime")      or ""
@@ -197,7 +187,7 @@ def main() -> None:
 
     print("\nA autenticar no Spotify...")
     token       = get_access_token()
-    playlist_id = os.environ["SPOTIFY_BATIDA_LIVE_PLAYLIST_ID"]
+    playlist_id = os.environ["SPOTIFY_BATIDA_LIVE_PLAYLIST_ID")
 
     print("\nA ler playlist actual...")
     current_uris = get_playlist_uris(token, playlist_id)
