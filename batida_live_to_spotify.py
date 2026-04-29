@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Recolhe as musicas tocadas na Batida FM nas ultimas 3h via API JSON:
+Recolhe as musicas tocadas na Batida FM na ultima 1h via API JSON:
   https://listenapi.planetradio.co.uk/api9.2/events/bfm/{datetime}/{count}
 
 Nota: o ultimo parametro e o NUMERO DE EVENTOS a devolver (nao horas).
@@ -29,10 +29,10 @@ SPOTIFY_TOKEN_URL      = "https://accounts.spotify.com/api/token"
 SPOTIFY_SEARCH_URL     = "https://api.spotify.com/v1/search"
 SPOTIFY_PLAYLIST_ITEMS = "https://api.spotify.com/v1/playlists/{id}/items"
 PLANETRADIO_API        = "https://listenapi.planetradio.co.uk/api9.2/events/bfm/{datetime}/{count}"
-API_EVENT_COUNT        = 100   # numero de eventos a pedir (nao e horas)
+API_EVENT_COUNT        = 100
 PLAYLIST_LIMIT         = 300
-WINDOW_HOURS           = 3
-MAX_RETRIES            = 5     # tentativas maximas em caso de 429
+WINDOW_HOURS           = 1
+MAX_RETRIES            = 5
 
 
 def write_summary(lines: list[str]) -> None:
@@ -106,10 +106,8 @@ def fetch_tracks() -> list[dict]:
     for ev in events:
         title  = (ev.get("nowPlayingTrack")  or "").strip()
         artist = (ev.get("nowPlayingArtist") or "").strip()
-
         if not title or not artist:
             continue
-
         start_raw = (ev.get("nowPlayingTime") or "")
         if start_raw:
             try:
@@ -118,13 +116,12 @@ def fetch_tracks() -> list[dict]:
                     continue
             except ValueError:
                 pass
-
         key = (artist.upper(), title.upper())
         if key not in seen:
             seen.add(key)
             tracks.append({"artist": artist, "title": title})
 
-    print(f"  {len(tracks)} tracks unicos nas ultimas {WINDOW_HOURS}h")
+    print(f"  {len(tracks)} tracks unicos na ultima {WINDOW_HOURS}h")
     return tracks
 
 
@@ -135,7 +132,7 @@ def search_track(token: str, artist: str, title: str) -> str | None:
         items = resp.json().get("tracks", {}).get("items", [])
         if items:
             return items[0]["uri"]
-        time.sleep(0.3)  # pequena pausa entre queries para nao stressar a API
+        time.sleep(0.1)
     return None
 
 
@@ -187,7 +184,7 @@ def main() -> None:
     raw_tracks = fetch_tracks()
     if not raw_tracks:
         print("Nenhum track encontrado na janela de tempo, a sair.")
-        write_summary(["## Batida FM Live -> Spotify", "", "Sem tracks novos nas ultimas 3h."])
+        write_summary(["## Batida FM Live -> Spotify", "", "Sem tracks novos na ultima 1h."])
         sys.exit(0)
 
     print("\nA autenticar no Spotify...")
