@@ -3,12 +3,16 @@
 Scrapa o historial de musicas tocadas na Antena 3 (antena3.rtp.pt/ja-tocou/)
 e adiciona as novas a uma playlist Spotify, mantendo um limite de 300 tracks
 e sem duplicados. Corre hora a hora via GitHub Actions.
+
+Entradas cujo titulo coincida com um programa da grelha EPG da Antena 3 sao
+automaticamente ignoradas (ex: "Manhãs da 3", "Logo Se Vê", etc.)
 """
 
 import os
 import sys
 import time
 import datetime
+import unicodedata
 import requests
 from bs4 import BeautifulSoup
 
@@ -16,6 +20,7 @@ SPOTIFY_TOKEN_URL      = "https://accounts.spotify.com/api/token"
 SPOTIFY_SEARCH_URL     = "https://api.spotify.com/v1/search"
 SPOTIFY_PLAYLIST_ITEMS = "https://api.spotify.com/v1/playlists/{id}/items"
 ANTENA3_URL            = "https://antena3.rtp.pt/ja-tocou/"
+EPG_URL                = "https://www.rtp.pt/EPG/json/rtp-channels-page/list-grid/radio/3/{date}"
 PLAYLIST_LIMIT         = 300
 WINDOW_HOURS           = 2
 
@@ -26,6 +31,46 @@ def write_summary(lines: list[str]) -> None:
         return
     with open(path, "a", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
+
+
+def normalize(text: str) -> str:
+    """Lowercase + remove acentos para comparacao robusta."""
+    nfkd = unicodedata.normalize("NFKD", text.lower().strip())
+    return "".join(c for c in nfkd if not unicodedata.combining(c))
+
+
+def get_epg_program_names(lisbon_date: datetime.date) -> set[str]:
+    """
+    Busca a grelha EPG da Antena 3 para o dia dado e devolve
+    um set com os nomes normalizados de todos os programas (principais e sub-programas).
+    Em caso de erro retorna set vazio (fail-safe: nao filtrar nada).
+    """
+    date_str = lisbon_date.strftime("%d-%m-%Y")
+    url      = EPG_URL.format(date=date_str)
+    try:
+        resp = requests.get(url, timeout=15,
+                            headers={"User-Agent": "Mozilla/5.0"})
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as exc:
+        print(f"  [EPG] Aviso: nao foi possivel obter a grelha ({exc})")
+        return set()
+
+    names   = set()
+    result  = data.get("result", {})
+    periods = list(result.values()) if isinstance(result, dict) else []
+    for period in periods:
+        if not isinstance(period, list):
+            continue
+        for entry in period:
+            if name := entry.get("name", "").strip():
+                names.add(normalize(name))
+            for sub in entry.get("sub_program", []):
+                if sub_name := sub.get("name", "").strip():
+                    names.add(normalize(sub_name))
+
+    print(f"  [EPG] {len(names)} programas carregados para {date_str}")
+    return names
 
 
 def get_access_token() -> str:
@@ -57,15 +102,16 @@ def fetch_tracks() -> list[dict]:
     cutoff        = lisbon_now - datetime.timedelta(hours=WINDOW_HOURS)
     print(f"  Janela: {cutoff.strftime('%H:%M')} - {lisbon_now.strftime('%H:%M')} Lisboa")
 
+    epg_programs = get_epg_program_names(lisbon_now.date())
+
     resp = requests.get(ANTENA3_URL, headers=headers, timeout=20)
     resp.raise_for_status()
 
-    soup   = BeautifulSoup(resp.text, "lxml")
-    seen   = set()
-    tracks = []
+    soup     = BeautifulSoup(resp.text, "lxml")
+    seen     = set()
+    tracks   = []
+    skipped_epg = 0
 
-    # Cada <li> tem: hora, titulo, artista (opcional)
-    # Entradas sem artista sao noticiarios/programas — ignorar
     for li in soup.select("ul li"):
         parts = [t.strip() for t in li.stripped_strings]
         # Precisa de pelo menos 3 partes: hora, titulo, artista
@@ -75,12 +121,16 @@ def fetch_tracks() -> list[dict]:
         title    = parts[1]
         artist   = parts[2]
 
+        # Ignorar entradas cujo titulo seja um programa da grelha
+        if epg_programs and normalize(title) in epg_programs:
+            skipped_epg += 1
+            continue
+
         # Validar formato de hora HH:MM
         try:
             rec_dt = datetime.datetime.strptime(
                 f"{lisbon_now.strftime('%Y-%m-%d')} {time_str}", "%Y-%m-%d %H:%M"
             )
-            # Tratar meia-noite: se hora > lisbon_now assume dia anterior
             if rec_dt > lisbon_now:
                 rec_dt -= datetime.timedelta(days=1)
         except ValueError:
@@ -94,6 +144,8 @@ def fetch_tracks() -> list[dict]:
             seen.add(key)
             tracks.append({"artist": artist, "title": title})
 
+    if skipped_epg:
+        print(f"  {skipped_epg} entradas ignoradas por serem programas da grelha EPG")
     print(f"  {len(tracks)} tracks unicos nas ultimas {WINDOW_HOURS}h")
     return tracks
 
