@@ -6,7 +6,7 @@ e sem duplicados. Corre hora a hora via GitHub Actions.
 
 Entradas cujo titulo OU artista coincida com um programa da grelha EPG da Antena 3 sao
 automaticamente ignoradas (ex: "Manhãs da 3", "Logo Se Vê", "Portugália", etc.)
-Entradas com titulo no formato HH:MM (hora) sao tambem ignoradas.
+O campo de hora e detectado dinamicamente (pode estar em qualquer posicao da linha).
 """
 
 import os
@@ -24,7 +24,7 @@ SPOTIFY_PLAYLIST_ITEMS = "https://api.spotify.com/v1/playlists/{id}/items"
 ANTENA3_URL            = "https://antena3.rtp.pt/ja-tocou/"
 EPG_URL                = "https://www.rtp.pt/EPG/json/rtp-channels-page/list-grid/radio/3/{date}"
 PLAYLIST_LIMIT         = 300
-WINDOW_HOURS           = 20
+WINDOW_HOURS           = 3
 TIME_RE                = re.compile(r"^\d{1,2}:\d{2}$")
 
 
@@ -76,16 +76,6 @@ def get_epg_program_names(lisbon_date: datetime.date) -> set[str]:
     return names
 
 
-def is_epg_entry(title: str, artist: str, epg_programs: set[str]) -> bool:
-    """Devolve True se o titulo OU o artista corresponde a um programa EPG,
-    ou se o titulo parece uma hora (HH:MM)."""
-    if TIME_RE.match(title.strip()):
-        return True
-    if not epg_programs:
-        return False
-    return normalize(title) in epg_programs or normalize(artist) in epg_programs
-
-
 def get_access_token() -> str:
     resp = requests.post(
         SPOTIFY_TOKEN_URL,
@@ -129,11 +119,25 @@ def fetch_tracks() -> list[dict]:
         parts = [t.strip() for t in li.stripped_strings]
         if len(parts) < 3:
             continue
-        time_str = parts[0]
-        title    = parts[1]
-        artist   = parts[2]
 
-        if is_epg_entry(title, artist, epg_programs):
+        # Detectar o indice do campo de hora (HH:MM) -- pode estar em qualquer posicao
+        time_idx = next((i for i, p in enumerate(parts) if TIME_RE.match(p)), None)
+        if time_idx is None:
+            continue
+
+        time_str  = parts[time_idx]
+        remaining = [p for i, p in enumerate(parts) if i != time_idx]
+        if len(remaining) < 2:
+            continue
+
+        title  = remaining[0]
+        artist = remaining[1]
+
+        # Filtrar programas da grelha EPG (verificar title e artist)
+        if epg_programs and (
+            normalize(title)  in epg_programs or
+            normalize(artist) in epg_programs
+        ):
             skipped_epg += 1
             continue
 
@@ -155,7 +159,7 @@ def fetch_tracks() -> list[dict]:
             tracks.append({"artist": artist, "title": title})
 
     if skipped_epg:
-        print(f"  {skipped_epg} entradas ignoradas (programas EPG ou hora invalida)")
+        print(f"  {skipped_epg} entradas ignoradas (programas EPG)")
     print(f"  {len(tracks)} tracks unicos nas ultimas {WINDOW_HOURS}h")
     return tracks
 
