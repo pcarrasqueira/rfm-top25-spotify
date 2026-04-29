@@ -6,8 +6,9 @@ e sem duplicados. Corre hora a hora via GitHub Actions.
 
 Entradas cujo titulo OU artista coincida com um programa da grelha EPG da Antena 3 sao
 automaticamente ignoradas (ex: "Manhãs da 3", "Logo Se Vê", "Portugália", etc.)
-O campo de hora e detectado dinamicamente (pode estar em qualquer posicao da linha).
-Estrutura da pagina: [Artista, HH:MM, Titulo]
+
+Estrutura de cada <li> na pagina: [HH:MM, Titulo, Artista]
+O campo de hora e detectado dinamicamente (TIME_RE) por seguranca.
 """
 
 import os
@@ -118,23 +119,25 @@ def fetch_tracks() -> list[dict]:
 
     for li in soup.select("ul li"):
         parts = [t.strip() for t in li.stripped_strings]
-        if len(parts) < 3:
-            continue
 
-        # Detectar o indice do campo de hora (HH:MM) -- pode estar em qualquer posicao
+        # Detectar o indice do campo de hora (HH:MM) -- normalmente em parts[0]
         time_idx = next((i for i, p in enumerate(parts) if TIME_RE.match(p)), None)
         if time_idx is None:
             continue
 
         time_str  = parts[time_idx]
         remaining = [p for i, p in enumerate(parts) if i != time_idx]
-        if len(remaining) < 2:
+        if len(remaining) < 1:
             continue
 
-        # Estrutura da pagina: [Artista, HH:MM, Titulo]
-        # Depois de remover a hora: remaining[0]=artista, remaining[1]=titulo
-        artist = remaining[0]
-        title  = remaining[1]
+        # Estrutura da pagina: [HH:MM, Titulo, Artista]
+        # Apos remover a hora: remaining[0]=titulo, remaining[1]=artista (opcional)
+        title  = remaining[0]
+        artist = remaining[1] if len(remaining) > 1 else ""
+
+        # Ignorar entradas sem titulo valido ou com titulo igual a hora (ruido)
+        if not title or TIME_RE.match(title):
+            continue
 
         # Filtrar programas da grelha EPG (verificar title e artist)
         if epg_programs and (
@@ -156,7 +159,7 @@ def fetch_tracks() -> list[dict]:
         if rec_dt < cutoff:
             continue
 
-        key = (artist.upper(), title.upper())
+        key = (title.upper(), artist.upper())
         if key not in seen:
             seen.add(key)
             tracks.append({"artist": artist, "title": title})
@@ -168,7 +171,10 @@ def fetch_tracks() -> list[dict]:
 
 
 def search_track(token: str, artist: str, title: str) -> str | None:
-    for query in [f'track:"{title}" artist:"{artist}"', f"{artist} {title}"]:
+    queries = [f'track:"{title}" artist:"{artist}"', f"{artist} {title}"]
+    if not artist:
+        queries = [f'track:"{title}"', title]
+    for query in queries:
         resp  = spotify("GET", SPOTIFY_SEARCH_URL, token,
                         params={"q": query, "type": "track", "limit": 5, "market": "PT"})
         items = resp.json().get("tracks", {}).get("items", [])
