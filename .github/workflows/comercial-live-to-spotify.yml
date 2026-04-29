@@ -1,0 +1,29 @@
+name: Radio Comercial Live -> Spotify
+
+run-name: "Comercial Live -> Spotify | ${{ github.event_name == 'workflow_dispatch' && 'manual' || 'agendado' }} @ ${{ github.run_started_at }}"
+
+on:
+  schedule:
+    - cron: '0 * * * *'  # hora a hora
+  workflow_dispatch:
+
+jobs:
+  update-playlist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run script
+        env:
+          SPOTIFY_CLIENT_ID:     ${{ secrets.SPOTIFY_CLIENT_ID }}
+          SPOTIFY_CLIENT_SECRET: ${{ secrets.SPOTIFY_CLIENT_SECRET }}
+          SPOTIFY_REFRESH_TOKEN: ${{ secrets.SPOTIFY_REFRESH_TOKEN }}
+          SPOTIFY_COMERCIAL_LIVE_PLAYLIST_ID: ${{ secrets.SPOTIFY_COMERCIAL_LIVE_PLAYLIST_ID }}
+        run: python comercial_live_to_spotify.py
