@@ -1,9 +1,4 @@
 #!/usr/bin/env python3
-"""
-Recolhe as musicas tocadas na Radio Comercial nas ultimas 2h via API JSON:
-  https://radiocomercial.pt/now_playing_logs/json/radio-comercial_YYYY-MM-DD.json
-"""
-
 import os
 import sys
 import time
@@ -53,23 +48,20 @@ def fetch_tracks() -> list[dict]:
         "X-Requested-With": "XMLHttpRequest",
         "Accept": "application/json, text/javascript, */*; q=0.01",
     }
-
     utc_now       = datetime.datetime.utcnow()
     lisbon_offset = 2 if 3 < utc_now.month < 11 else 1
     lisbon_now    = utc_now + datetime.timedelta(hours=lisbon_offset)
     cutoff        = lisbon_now - datetime.timedelta(hours=WINDOW_HOURS)
+    date_str      = lisbon_now.strftime("%Y-%m-%d")
+    url           = COMERCIAL_LOG_URL.format(date=date_str)
 
-    date_str = lisbon_now.strftime("%Y-%m-%d")
-    url      = COMERCIAL_LOG_URL.format(date=date_str)
-
-    resp = requests.get(url, headers=headers, timeout=20)
+    resp    = requests.get(url, headers=headers, timeout=20)
     resp.raise_for_status()
     records = resp.json().get("NOW_PLAYING_LOG", {}).get("NOW_PLAYING_RECORD", [])
     print(f"  {len(records)} registos totais hoje ({date_str})")
     print(f"  Janela: {cutoff.strftime('%H:%M')} - {lisbon_now.strftime('%H:%M')} Lisboa")
 
-    seen   = set()
-    tracks = []
+    seen, tracks = set(), []
     for rec in reversed(records):
         date_raw = rec.get("DATE", "")
         try:
@@ -87,7 +79,6 @@ def fetch_tracks() -> list[dict]:
         if key not in seen:
             seen.add(key)
             tracks.append({"artist": artist, "title": title})
-
     print(f"  {len(tracks)} tracks unicos nas ultimas {WINDOW_HOURS}h")
     return tracks
 
@@ -107,8 +98,15 @@ def get_playlist_uris(token: str, playlist_id: str) -> list[str]:
     url    = SPOTIFY_PLAYLIST_ITEMS.format(id=playlist_id)
     uris   = []
     params = {"limit": 100}
+    first  = True
     while url:
         data = spotify("GET", url, token, params=params).json()
+        if first:
+            print(f"  [DEBUG] total: {data.get('total')} | items count: {len(data.get('items', []))} | next: {'sim' if data.get('next') else 'nao'}")
+            if data.get("items"):
+                sample = data["items"][0]
+                print(f"  [DEBUG] primeiro item: {str(sample)[:200]}")
+            first = False
         for e in data.get("items", []):
             track = (e or {}).get("track")
             if track and track.get("uri"):
@@ -138,7 +136,7 @@ def trim_playlist(token: str, playlist_id: str, current_uris: list[str], slots_n
         overflow     = len(current_uris) - target
         to_remove    = current_uris[-overflow:]
         removed      = len(to_remove)
-        print(f"  A remover {removed} tracks antigos para libertar espaco...")
+        print(f"  A remover {removed} tracks antigos...")
         remove_items(token, playlist_id, to_remove)
         current_uris = current_uris[:-overflow]
     return current_uris, removed
@@ -151,17 +149,13 @@ def main() -> None:
     raw_tracks = fetch_tracks()
     if not raw_tracks:
         print("Nenhum track encontrado na janela de tempo, a sair.")
-        write_summary([
-            "## Radio Comercial Live -> Spotify",
-            f"> {datetime.datetime.utcnow().strftime('%d/%m/%Y %H:%M UTC')}",
-            "",
-            "Sem tracks novos nas ultimas 2h.",
-        ])
+        write_summary(["## Radio Comercial Live -> Spotify", "", "Sem tracks novos nas ultimas 2h."])
         sys.exit(0)
 
     print("\nA autenticar no Spotify...")
     token       = get_access_token()
     playlist_id = os.environ["SPOTIFY_COMERCIAL_LIVE_PLAYLIST_ID"]
+    print(f"  Playlist ID: {playlist_id}")
 
     print("\nA ler playlist actual...")
     current_uris = get_playlist_uris(token, playlist_id)
@@ -169,10 +163,7 @@ def main() -> None:
     print(f"  {len(current_uris)} tracks na playlist")
 
     print(f"\nA pesquisar {len(raw_tracks)} tracks no Spotify...")
-    new_uris  = []
-    added     = []
-    skipped   = []
-    not_found = []
+    new_uris, added, skipped, not_found = [], [], [], []
     for t in raw_tracks:
         uri = search_track(token, t["artist"], t["title"])
         if not uri:
@@ -187,7 +178,6 @@ def main() -> None:
 
     print(f"\nNovos: {len(added)} | Ja na playlist: {len(skipped)} | Nao encontrados: {len(not_found)}")
 
-    # Trim sempre, independente de haver tracks novos
     slots_needed          = min(len(new_uris), PLAYLIST_LIMIT)
     current_uris, removed_count = trim_playlist(token, playlist_id, current_uris, slots_needed)
 
@@ -213,18 +203,13 @@ def main() -> None:
         "",
     ]
     if added:
-        summary += [
-            "### Adicionados",
-            "| Artista | Musica |",
-            "|---|---|",
-        ] + [f"| {t['artist']} | {t['title']} |" for t in added] + [""]
-
+        summary += ["### Adicionados", "| Artista | Musica |", "|---|---|"] + \
+                   [f"| {t['artist']} | {t['title']} |" for t in added] + [""]
     if not_found:
         summary += ["### Nao encontrados no Spotify"] + \
                    [f"- {t['artist']} - {t['title']}" for t in not_found] + [""]
-
     if removed_count:
-        summary.append(f"_{removed_count} tracks antigos removidos para manter limite de {PLAYLIST_LIMIT}._")
+        summary.append(f"_{removed_count} tracks antigos removidos (limite {PLAYLIST_LIMIT})._")
 
     write_summary(summary)
 
