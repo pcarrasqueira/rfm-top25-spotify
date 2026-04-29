@@ -55,7 +55,8 @@ def fetch_tracks() -> list[dict]:
     }
     utc_now       = datetime.datetime.now(datetime.UTC)
     lisbon_offset = 2 if 3 < utc_now.month < 11 else 1
-    lisbon_now    = utc_now + datetime.timedelta(hours=lisbon_offset)
+    # hora de Lisboa como naive (o JSON da Comercial nao tem timezone)
+    lisbon_now    = (utc_now + datetime.timedelta(hours=lisbon_offset)).replace(tzinfo=None)
     cutoff        = lisbon_now - datetime.timedelta(hours=WINDOW_HOURS)
     date_str      = lisbon_now.strftime("%Y-%m-%d")
     url           = COMERCIAL_LOG_URL.format(date=date_str)
@@ -107,7 +108,6 @@ def get_playlist_uris(token: str, playlist_id: str) -> list[str]:
     while url:
         data = spotify("GET", url, token, params=params).json()
         for e in data.get("items", []):
-            # campo renomeado de 'track' para 'item' na API v1 actual
             entry = (e or {}).get("item") or (e or {}).get("track")
             if entry and entry.get("uri") and not entry.get("is_local"):
                 uris.append(entry["uri"])
