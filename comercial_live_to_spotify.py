@@ -102,10 +102,13 @@ def get_playlist_uris(token: str, playlist_id: str) -> list[str]:
     while url:
         data = spotify("GET", url, token, params=params).json()
         if first:
-            print(f"  [DEBUG] total: {data.get('total')} | items count: {len(data.get('items', []))} | next: {'sim' if data.get('next') else 'nao'}")
-            if data.get("items"):
-                sample = data["items"][0]
-                print(f"  [DEBUG] primeiro item: {str(sample)[:200]}")
+            items = data.get("items", [])
+            print(f"  [DEBUG] total={data.get('total')} items_count={len(items)} next={'sim' if data.get('next') else 'nao'}")
+            if items:
+                e0 = items[0] or {}
+                print(f"  [DEBUG] item[0] keys: {list(e0.keys())}")
+                track0 = e0.get("track")
+                print(f"  [DEBUG] item[0]['track'] type={type(track0).__name__} value={str(track0)[:300]}")
             first = False
         for e in data.get("items", []):
             track = (e or {}).get("track")
