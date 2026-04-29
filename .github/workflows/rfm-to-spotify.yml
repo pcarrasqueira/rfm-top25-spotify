@@ -1,11 +1,11 @@
-name: RFM Top 25 → Spotify
+name: Radios PT -> Spotify | RFM Top 25
 
-run-name: "RFM Top 25 → Spotify | ${{ github.event_name == 'workflow_dispatch' && 'manual' || 'agendado' }} @ ${{ github.run_started_at }}"
+run-name: "RFM Top 25 -> Spotify | ${{ github.event_name == 'workflow_dispatch' && 'manual' || 'agendado' }} @ ${{ github.run_started_at }}"
 
 on:
   schedule:
-    - cron: '0 21 * * 0'  # Domingo 21:00 UTC (22:00 Lisboa)
-    - cron: '0 9 * * 1'   # Segunda 09:00 UTC (10:00 Lisboa)
+    - cron: '30 22 * * 0'  # Domingo 23:30 Lisboa (22:30 UTC verao)
+    - cron: '0 9 * * 1'    # Segunda 10:00 Lisboa (09:00 UTC verao)
   workflow_dispatch:
 
 jobs:

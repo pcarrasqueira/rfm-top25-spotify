@@ -1,10 +1,11 @@
-name: Comercial TNT Top 20 → Spotify
+name: Radios PT -> Spotify | Comercial TNT Top 20
+
+run-name: "Comercial TNT Top 20 -> Spotify | ${{ github.event_name == 'workflow_dispatch' && 'manual' || 'agendado' }} @ ${{ github.run_started_at }}"
 
 on:
   schedule:
-    # Segundas 10:00 Lisboa (09:00 UTC inverno / 08:00 UTC verão)
-    # Corre à segunda para apanhar o TNT transmitido no domingo à noite
-    - cron: "0 9 * * 1"
+    - cron: '30 22 * * 0'  # Domingo 23:30 Lisboa (22:30 UTC verao)
+    - cron: '0 9 * * 1'    # Segunda 10:00 Lisboa (09:00 UTC verao)
   workflow_dispatch:
 
 jobs:
@@ -22,7 +23,7 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Instalar dependências
+      - name: Instalar dependencias
         run: pip install -r requirements.txt
 
       - name: Correr script
