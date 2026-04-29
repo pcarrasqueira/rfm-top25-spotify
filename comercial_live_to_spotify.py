@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+"""
+Recolhe as musicas tocadas na Radio Comercial nas ultimas 2h via API JSON:
+  https://radiocomercial.pt/now_playing_logs/json/radio-comercial_YYYY-MM-DD.json
+"""
+
 import os
 import sys
 import time
@@ -48,7 +53,7 @@ def fetch_tracks() -> list[dict]:
         "X-Requested-With": "XMLHttpRequest",
         "Accept": "application/json, text/javascript, */*; q=0.01",
     }
-    utc_now       = datetime.datetime.utcnow()
+    utc_now       = datetime.datetime.now(datetime.UTC)
     lisbon_offset = 2 if 3 < utc_now.month < 11 else 1
     lisbon_now    = utc_now + datetime.timedelta(hours=lisbon_offset)
     cutoff        = lisbon_now - datetime.timedelta(hours=WINDOW_HOURS)
@@ -95,25 +100,17 @@ def search_track(token: str, artist: str, title: str) -> str | None:
 
 
 def get_playlist_uris(token: str, playlist_id: str) -> list[str]:
+    """Le todos os URIs da playlist. A Spotify API usa o campo 'item' (nao 'track') desde 2024."""
     url    = SPOTIFY_PLAYLIST_ITEMS.format(id=playlist_id)
     uris   = []
     params = {"limit": 100}
-    first  = True
     while url:
         data = spotify("GET", url, token, params=params).json()
-        if first:
-            items = data.get("items", [])
-            print(f"  [DEBUG] total={data.get('total')} items_count={len(items)} next={'sim' if data.get('next') else 'nao'}")
-            if items:
-                e0 = items[0] or {}
-                print(f"  [DEBUG] item[0] keys: {list(e0.keys())}")
-                track0 = e0.get("track")
-                print(f"  [DEBUG] item[0]['track'] type={type(track0).__name__} value={str(track0)[:300]}")
-            first = False
         for e in data.get("items", []):
-            track = (e or {}).get("track")
-            if track and track.get("uri"):
-                uris.append(track["uri"])
+            # campo renomeado de 'track' para 'item' na API v1 actual
+            entry = (e or {}).get("item") or (e or {}).get("track")
+            if entry and entry.get("uri") and not entry.get("is_local"):
+                uris.append(entry["uri"])
         url    = data.get("next")
         params = {}
     return uris
@@ -158,7 +155,6 @@ def main() -> None:
     print("\nA autenticar no Spotify...")
     token       = get_access_token()
     playlist_id = os.environ["SPOTIFY_COMERCIAL_LIVE_PLAYLIST_ID"]
-    print(f"  Playlist ID: {playlist_id}")
 
     print("\nA ler playlist actual...")
     current_uris = get_playlist_uris(token, playlist_id)
@@ -174,6 +170,7 @@ def main() -> None:
             print(f"  \u2717 {t['artist']} - {t['title']}")
         elif uri in current_set:
             skipped.append(t)
+            print(f"  ~ {t['artist']} - {t['title']} (ja existe)")
         else:
             new_uris.append(uri)
             added.append(t)
@@ -194,7 +191,7 @@ def main() -> None:
     else:
         print("Nenhum track novo para adicionar.")
 
-    now          = datetime.datetime.utcnow().strftime("%d/%m/%Y %H:%M UTC")
+    now          = datetime.datetime.now(datetime.UTC).strftime("%d/%m/%Y %H:%M UTC")
     playlist_url = f"https://open.spotify.com/playlist/{playlist_id}"
     summary = [
         "## Radio Comercial Live -> Spotify",
