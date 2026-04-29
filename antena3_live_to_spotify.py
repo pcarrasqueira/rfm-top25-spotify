@@ -8,8 +8,8 @@ Entradas cujo titulo OU artista coincida com um programa da grelha EPG da Antena
 automaticamente ignoradas (ex: "Manhãs da 3", "Logo Se Vê", "Portugália", etc.)
 
 Estrutura de cada <li> na pagina: ['HH:MM', 'HH:MM', 'Titulo', 'Artista']
-O horario aparece duplicado no HTML - filtramos todos os tokens que sao HH:MM.
-O UL das musicas tem class='list-unstyled m-0' e 100+ items.
+O horario aparece duplicado no HTML - filtramos todos os tokens HH:MM.
+O UL das musicas tem 100+ items directos com horas.
 """
 
 import os
@@ -28,7 +28,8 @@ ANTENA3_URL            = "https://antena3.rtp.pt/ja-tocou/"
 EPG_URL                = "https://www.rtp.pt/EPG/json/rtp-channels-page/list-grid/radio/3/{date}"
 PLAYLIST_LIMIT         = 300
 WINDOW_HOURS           = 3
-TIME_RE                = re.compile(r"^\d{1,2}:\d{2}$")
+TIME_RE                = re.compile(r"^\d{1,2}:\d{2}$")   # para tokens individuais
+TIME_RE_IN             = re.compile(r"\d{1,2}:\d{2}")      # para pesquisa em texto concatenado
 DEBUG                  = os.environ.get("A3_DEBUG", "").lower() in ("1", "true", "yes")
 
 
@@ -94,12 +95,13 @@ def spotify(method: str, url: str, token: str, **kwargs) -> requests.Response:
 
 
 def get_song_ul(soup: BeautifulSoup):
-    """Encontra o <ul> principal da lista de musicas (100+ items, class list-unstyled)."""
+    """Encontra o <ul> principal da lista de musicas (50+ items directos que contenham HH:MM)."""
     for ul in soup.find_all("ul"):
         lis = ul.find_all("li", recursive=False)
         if len(lis) > 50:
+            # get_text() concatena tudo sem separadores, usar TIME_RE_IN (sem anchors)
             sample = [li.get_text(strip=True) for li in lis[:5]]
-            if any(TIME_RE.search(t) for t in sample):
+            if any(TIME_RE_IN.search(t) for t in sample):
                 return ul
     return None
 
@@ -133,7 +135,6 @@ def fetch_tracks() -> list[dict]:
         parts = [t.strip() for t in li.stripped_strings]
 
         # Cada <li> tem a hora duplicada: ['HH:MM', 'HH:MM', 'Titulo', 'Artista']
-        # Separar tokens de hora dos tokens de conteudo
         time_tokens    = [p for p in parts if TIME_RE.match(p)]
         content_tokens = [p for p in parts if not TIME_RE.match(p)]
 
@@ -277,7 +278,7 @@ def main() -> None:
     current_uris, removed_count = trim_playlist(token, playlist_id, current_uris, slots_needed)
 
     if new_uris:
-        space    = PLAYLIST_LIMIT - len(current_uris)
+        space    = PLAYLIST_LIMIT - len(new_uris)
         new_uris = new_uris[:space]
         print(f"  A adicionar {len(new_uris)} tracks...")
         add_items(token, playlist_id, new_uris)
