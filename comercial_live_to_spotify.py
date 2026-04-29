@@ -53,9 +53,7 @@ def spotify(method: str, url: str, token: str, **kwargs) -> requests.Response:
 def fetch_tracks() -> list[dict]:
     """
     Busca o JSON do dia actual e filtra os registos das ultimas WINDOW_HOURS horas.
-    O campo DATE esta em hora local de Lisboa (sem timezone) -- comparamos directamente
-    com datetime.utcnow() + offset de Lisboa (UTC+1 inverno / UTC+2 verao).
-    Como o GitHub Actions corre em UTC, usamos utcnow() e ajustamos.
+    O campo DATE esta em hora local de Lisboa (sem timezone).
     """
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
@@ -64,13 +62,10 @@ def fetch_tracks() -> list[dict]:
         "Accept": "application/json, text/javascript, */*; q=0.01",
     }
 
-    # Hora actual em Lisboa (WEST=UTC+1, WESZ=UTC+2) -- detectar DST de forma simples
-    # Abril-Outubro = UTC+2 (WESZ), Novembro-Marco = UTC+1 (WET)
-    utc_now    = datetime.datetime.utcnow()
-    month      = utc_now.month
-    lisbon_offset = 2 if 3 < month < 11 else 1   # aproximacao suficiente para este caso
-    lisbon_now = utc_now + datetime.timedelta(hours=lisbon_offset)
-    cutoff     = lisbon_now - datetime.timedelta(hours=WINDOW_HOURS)
+    utc_now       = datetime.datetime.utcnow()
+    lisbon_offset = 2 if 3 < utc_now.month < 11 else 1
+    lisbon_now    = utc_now + datetime.timedelta(hours=lisbon_offset)
+    cutoff        = lisbon_now - datetime.timedelta(hours=WINDOW_HOURS)
 
     date_str = lisbon_now.strftime("%Y-%m-%d")
     url      = COMERCIAL_LOG_URL.format(date=date_str)
@@ -81,7 +76,6 @@ def fetch_tracks() -> list[dict]:
     print(f"  {len(records)} registos totais hoje ({date_str})")
     print(f"  Janela: {cutoff.strftime('%H:%M')} - {lisbon_now.strftime('%H:%M')} Lisboa")
 
-    # Filtrar por janela de tempo, mais recente primeiro, sem duplicados
     seen   = set()
     tracks = []
     for rec in reversed(records):
@@ -180,22 +174,31 @@ def main() -> None:
         uri = search_track(token, t["artist"], t["title"])
         if not uri:
             not_found.append(t)
-            print(f"  ✗ {t['artist']} - {t['title']}")
+            print(f"  \u2717 {t['artist']} - {t['title']}")
         elif uri in current_set:
             skipped.append(t)
         else:
             new_uris.append(uri)
             added.append(t)
-            print(f"  ✓ {t['artist']} - {t['title']}")
+            print(f"  \u2713 {t['artist']} - {t['title']}")
 
     print(f"\nNovos: {len(added)} | Ja na playlist: {len(skipped)} | Nao encontrados: {len(not_found)}")
 
     removed_count = 0
     if new_uris:
+        # Garantir que new_uris nao excede o limite por si so
+        if len(new_uris) > PLAYLIST_LIMIT:
+            print(f"  Trimming new_uris de {len(new_uris)} para {PLAYLIST_LIMIT}")
+            new_uris = new_uris[:PLAYLIST_LIMIT]
+            added    = added[:PLAYLIST_LIMIT]
+
+        # Calcular quantos tracks antigos remover para caber dentro do limite
         total_after = len(current_uris) + len(new_uris)
         if total_after > PLAYLIST_LIMIT:
             overflow      = total_after - PLAYLIST_LIMIT
-            to_remove     = current_uris[-overflow:]
+            # overflow nunca pode exceder o que existe na playlist
+            overflow      = min(overflow, len(current_uris))
+            to_remove     = current_uris[-overflow:]   # os mais antigos (fim da lista)
             removed_count = len(to_remove)
             print(f"  A remover {removed_count} tracks antigos (limite {PLAYLIST_LIMIT})")
             remove_items(token, playlist_id, to_remove)
@@ -212,8 +215,8 @@ def main() -> None:
         "## Radio Comercial Live -> Spotify",
         f"> {now} | [Abrir playlist]({playlist_url})",
         "",
-        f"| Novos | Ja existentes | Nao encontrados |",
-        f"|---|---|---|",
+        "| Novos | Ja existentes | Nao encontrados |",
+        "|---|---|---|",
         f"| {len(added)} | {len(skipped)} | {len(not_found)} |",
         "",
     ]
@@ -227,6 +230,9 @@ def main() -> None:
     if not_found:
         summary += ["### Nao encontrados no Spotify"] + \
                    [f"- {t['artist']} - {t['title']}" for t in not_found] + [""]
+
+    if removed_count:
+        summary.append(f"_{removed_count} tracks antigos removidos para manter limite de {PLAYLIST_LIMIT}._")
 
     write_summary(summary)
 
