@@ -32,6 +32,7 @@ PLANETRADIO_API        = "https://listenapi.planetradio.co.uk/api9.2/events/bfm/
 API_EVENT_COUNT        = 100   # numero de eventos a pedir (nao e horas)
 PLAYLIST_LIMIT         = 300
 WINDOW_HOURS           = 3
+MAX_RETRIES            = 5     # tentativas maximas em caso de 429
 
 
 def write_summary(lines: list[str]) -> None:
@@ -54,11 +55,20 @@ def get_access_token() -> str:
 
 
 def spotify(method: str, url: str, token: str, **kwargs) -> requests.Response:
+    """Executa um pedido ao Spotify com retry automatico em caso de 429."""
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    resp = requests.request(method, url, headers=headers, timeout=15, **kwargs)
-    if not resp.ok:
-        print(f"  HTTP {resp.status_code} {method} {url}: {resp.text[:300]}")
-        resp.raise_for_status()
+    for attempt in range(MAX_RETRIES):
+        resp = requests.request(method, url, headers=headers, timeout=15, **kwargs)
+        if resp.status_code == 429:
+            retry_after = int(resp.headers.get("Retry-After", 2 ** attempt))
+            print(f"  [429] Rate limit. A aguardar {retry_after}s (tentativa {attempt + 1}/{MAX_RETRIES})...")
+            time.sleep(retry_after)
+            continue
+        if not resp.ok:
+            print(f"  HTTP {resp.status_code} {method} {url}: {resp.text[:300]}")
+            resp.raise_for_status()
+        return resp
+    resp.raise_for_status()
     return resp
 
 
@@ -100,7 +110,6 @@ def fetch_tracks() -> list[dict]:
         if not title or not artist:
             continue
 
-        # Filtrar por janela temporal
         start_raw = (ev.get("nowPlayingTime") or "")
         if start_raw:
             try:
@@ -126,7 +135,7 @@ def search_track(token: str, artist: str, title: str) -> str | None:
         items = resp.json().get("tracks", {}).get("items", [])
         if items:
             return items[0]["uri"]
-        time.sleep(0.05)
+        time.sleep(0.3)  # pequena pausa entre queries para nao stressar a API
     return None
 
 
