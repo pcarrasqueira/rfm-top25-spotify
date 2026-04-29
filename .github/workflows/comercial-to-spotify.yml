@@ -1,0 +1,34 @@
+name: Comercial TNT Top 20 → Spotify
+
+on:
+  schedule:
+    # Segundas 10:00 Lisboa (09:00 UTC inverno / 08:00 UTC verão)
+    # Corre à segunda para apanhar o TNT transmitido no domingo à noite
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+
+jobs:
+  update-playlist:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Instalar dependências
+        run: pip install -r requirements.txt
+
+      - name: Correr script
+        env:
+          SPOTIFY_CLIENT_ID:             ${{ secrets.SPOTIFY_CLIENT_ID }}
+          SPOTIFY_CLIENT_SECRET:         ${{ secrets.SPOTIFY_CLIENT_SECRET }}
+          SPOTIFY_REFRESH_TOKEN:         ${{ secrets.SPOTIFY_REFRESH_TOKEN }}
+          SPOTIFY_COMERCIAL_PLAYLIST_ID: ${{ secrets.SPOTIFY_COMERCIAL_PLAYLIST_ID }}
+        run: python comercial_to_spotify.py

@@ -1,14 +1,16 @@
-# RFM → Spotify
+# RFM + Rádio Comercial → Spotify
 
 [![RFM Top 25 → Spotify](https://github.com/pcarrasqueira/rfm-top25-spotify/actions/workflows/rfm-to-spotify.yml/badge.svg)](https://github.com/pcarrasqueira/rfm-top25-spotify/actions/workflows/rfm-to-spotify.yml)
 [![Últimas no Ar → Spotify](https://github.com/pcarrasqueira/rfm-top25-spotify/actions/workflows/rfm-live-to-spotify.yml/badge.svg)](https://github.com/pcarrasqueira/rfm-top25-spotify/actions/workflows/rfm-live-to-spotify.yml)
+[![Comercial TNT Top 20 → Spotify](https://github.com/pcarrasqueira/rfm-top25-spotify/actions/workflows/comercial-to-spotify.yml/badge.svg)](https://github.com/pcarrasqueira/rfm-top25-spotify/actions/workflows/comercial-to-spotify.yml)
 
-Dois workflows que sincronizam conteúdo da RFM com playlists Spotify.
+Três workflows que sincronizam conteúdo de rádios portuguesas com playlists Spotify.
 
-| Workflow | Playlist | Frequência |
-|---|---|---|
-| **RFM Top 25** | Os 25 mais tocados do momento | Domingos 22:00 e Segundas 10:00 (Lisboa) |
-| **Últimas no Ar** | Rolling das últimas 100 músicas tocadas | Hora a hora |
+| Workflow | Fonte | Playlist | Frequência |
+|---|---|---|---|
+| **RFM Top 25** | rfm.pt/top25rfm | Os 25 mais tocados | Domingos 22:00 e Segundas 10:00 (Lisboa) |
+| **Últimas no Ar** | rfm.pt/que-musica-era | Rolling das últimas 100 músicas | Hora a hora |
+| **Comercial TNT Top 20** | radiocomercial.pt/programas/tnt | Os 20 mais votados | Segundas 10:00 (Lisboa) |
 
 ---
 
@@ -40,9 +42,10 @@ No final imprime o Refresh Token — copia-o para o passo seguinte.
 
 ### 3. Criar as playlists no Spotify
 
-Cria duas playlists vazias no Spotify (últimas pública ou privada, à tua escolha):
+Cria as playlists vazias no Spotify (públicas ou privadas, à tua escolha):
 - **RFM Top 25** — substituída 2x por semana
 - **Últimas no Ar** — rolling das últimas 100 músicas tocadas na rádio
+- **Comercial TNT Top 20** — substituída às segundas
 
 O ID de cada playlist está no URL: `https://open.spotify.com/playlist/**ID_AQUI**`
 
@@ -57,12 +60,13 @@ Em **Settings → Secrets and variables → Actions** adiciona:
 | `SPOTIFY_REFRESH_TOKEN` | Refresh token obtido no passo 2 |
 | `SPOTIFY_PLAYLIST_ID` | ID da playlist RFM Top 25 |
 | `SPOTIFY_LIVE_PLAYLIST_ID` | ID da playlist Últimas no Ar |
+| `SPOTIFY_COMERCIAL_PLAYLIST_ID` | ID da playlist Comercial TNT Top 20 |
 
 ### 5. Testar
 
 Vai a **Actions** e corre cada workflow manualmente com **Run workflow**.
 
-Os logs e o job summary mostram cada track encontrado (✓), já existente (=) ou não encontrado (✗).
+Os logs e o job summary mostram cada track encontrado (✓) ou não encontrado (✗).
 
 ---
 
@@ -75,21 +79,26 @@ export SPOTIFY_CLIENT_ID=xxx
 export SPOTIFY_CLIENT_SECRET=xxx
 export SPOTIFY_REFRESH_TOKEN=xxx
 
-# Top 25
+# RFM Top 25
 export SPOTIFY_PLAYLIST_ID=xxx
 python rfm_to_spotify.py
 
 # Últimas no Ar
 export SPOTIFY_LIVE_PLAYLIST_ID=xxx
 python rfm_live_to_spotify.py
+
+# Comercial TNT Top 20
+export SPOTIFY_COMERCIAL_PLAYLIST_ID=xxx
+python comercial_to_spotify.py
 ```
 
 ---
 
 ## Notas técnicas
 
-- **API Spotify (Fev 2026)**: os endpoints `/playlists/{id}/tracks` foram removidos e substituídos por `/playlists/{id}/items`. O DELETE usa `{"uris": [...]}` (não `{"tracks": [...]}`). Ambos os scripts usam os endpoints novos.
-- **Scraping RFM**: ambas as páginas (`/top25rfm` e `/que-musica-era`) devolvem HTML estático — sem necessidade de headless browser. O `/que-musica-era` ignora parâmetros de hora via URL (os dropdowns são JS), por isso o script recolhe sempre a hora actual.
+- **API Spotify (Fev 2026)**: os endpoints `/playlists/{id}/tracks` foram removidos e substituídos por `/playlists/{id}/items`. Todos os scripts usam os endpoints novos.
+- **Scraping RFM**: ambas as páginas (`/top25rfm` e `/que-musica-era`) devolvem HTML estático — sem necessidade de headless browser.
+- **Scraping Comercial**: a página `/programas/tnt-todos-no-top` devolve HTML estático com o top semanal. O script tenta 4 estratégias de scraping em cascata para maior resiliência a mudanças de layout.
 - **Refresh Token**: não expira, a não ser que revogues o acesso em [spotify.com/account/apps](https://www.spotify.com/account/apps) ou mudes a password.
 - **GitHub Actions (plano gratuito)**: 2000 min/mês. O workflow hora-a-hora usa ~360 min/mês, bem dentro do limite.
 
@@ -99,10 +108,12 @@ python rfm_live_to_spotify.py
 
 ```
 .github/workflows/
-  rfm-to-spotify.yml        # Top 25 — Domingos 21:00 UTC + Segundas 09:00 UTC
-  rfm-live-to-spotify.yml   # Últimas no Ar — hora a hora
-rfm_to_spotify.py           # script Top 25
-rfm_live_to_spotify.py      # script Últimas no Ar
-get_refresh_token.py        # helper para gerar o refresh token
-requirements.txt            # dependências Python
+  rfm-to-spotify.yml          # RFM Top 25 — Domingos 21:00 UTC + Segundas 09:00 UTC
+  rfm-live-to-spotify.yml     # Últimas no Ar — hora a hora
+  comercial-to-spotify.yml    # Comercial TNT Top 20 — Segundas 09:00 UTC
+rfm_to_spotify.py             # script RFM Top 25
+rfm_live_to_spotify.py        # script Últimas no Ar
+comercial_to_spotify.py       # script Comercial TNT Top 20
+get_refresh_token.py          # helper para gerar o refresh token
+requirements.txt              # dependências Python
 ```
