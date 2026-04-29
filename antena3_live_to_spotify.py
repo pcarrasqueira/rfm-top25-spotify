@@ -22,7 +22,7 @@ SPOTIFY_PLAYLIST_ITEMS = "https://api.spotify.com/v1/playlists/{id}/items"
 ANTENA3_URL            = "https://antena3.rtp.pt/ja-tocou/"
 EPG_URL                = "https://www.rtp.pt/EPG/json/rtp-channels-page/list-grid/radio/3/{date}"
 PLAYLIST_LIMIT         = 300
-WINDOW_HOURS           = 2
+WINDOW_HOURS           = 3
 
 
 def write_summary(lines: list[str]) -> None:
@@ -107,26 +107,23 @@ def fetch_tracks() -> list[dict]:
     resp = requests.get(ANTENA3_URL, headers=headers, timeout=20)
     resp.raise_for_status()
 
-    soup     = BeautifulSoup(resp.text, "lxml")
-    seen     = set()
-    tracks   = []
+    soup        = BeautifulSoup(resp.text, "lxml")
+    seen        = set()
+    tracks      = []
     skipped_epg = 0
 
     for li in soup.select("ul li"):
         parts = [t.strip() for t in li.stripped_strings]
-        # Precisa de pelo menos 3 partes: hora, titulo, artista
         if len(parts) < 3:
             continue
         time_str = parts[0]
         title    = parts[1]
         artist   = parts[2]
 
-        # Ignorar entradas cujo titulo seja um programa da grelha
         if epg_programs and normalize(title) in epg_programs:
             skipped_epg += 1
             continue
 
-        # Validar formato de hora HH:MM
         try:
             rec_dt = datetime.datetime.strptime(
                 f"{lisbon_now.strftime('%Y-%m-%d')} {time_str}", "%Y-%m-%d %H:%M"
@@ -209,7 +206,7 @@ def main() -> None:
     raw_tracks = fetch_tracks()
     if not raw_tracks:
         print("Nenhum track encontrado na janela de tempo, a sair.")
-        write_summary(["## Antena 3 Live -> Spotify", "", "Sem tracks novos nas ultimas 2h."])
+        write_summary(["## Antena 3 Live -> Spotify", "", "Sem tracks novos nas ultimas 3h."])
         sys.exit(0)
 
     print("\nA autenticar no Spotify...")

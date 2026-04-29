@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Recolhe as musicas tocadas na M80 nas ultimas 2h via API JSON:
+Recolhe as musicas tocadas na M80 nas ultimas 3h via API JSON:
   https://m80.pt/now_playing_logs/json/m80_YYYY-MM-DD.json
 """
 
@@ -15,7 +15,7 @@ SPOTIFY_SEARCH_URL     = "https://api.spotify.com/v1/search"
 SPOTIFY_PLAYLIST_ITEMS = "https://api.spotify.com/v1/playlists/{id}/items"
 M80_LOG_URL            = "https://m80.pt/now_playing_logs/json/m80_{date}.json"
 PLAYLIST_LIMIT         = 300
-WINDOW_HOURS           = 2
+WINDOW_HOURS           = 3
 
 
 def write_summary(lines: list[str]) -> None:
@@ -147,7 +147,7 @@ def main() -> None:
     raw_tracks = fetch_tracks()
     if not raw_tracks:
         print("Nenhum track encontrado na janela de tempo, a sair.")
-        write_summary(["## M80 Live -> Spotify", "", "Sem tracks novos nas ultimas 2h."])
+        write_summary(["## M80 Live -> Spotify", "", "Sem tracks novos nas ultimas 3h."])
         sys.exit(0)
 
     print("\nA autenticar no Spotify...")
