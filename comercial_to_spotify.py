@@ -81,7 +81,7 @@ def scrape_comercial_tnt() -> list[dict]:
         <div class="songArtist">Artista</div>    (ou classe similar)
       </div>
 
-    Se as classes internas mudarem, o fallback extraí todos os textos do
+    Se as classes internas mudarem, o fallback extrai todos os textos do
     div.inside e usa os primeiros dois campos não-numéricos como título/artista.
     """
     headers = {
@@ -118,7 +118,7 @@ def scrape_comercial_tnt() -> list[dict]:
         else:
             # Fallback: extrair todos os textos dos filhos directos do inside
             # e pegar nos primeiros dois que não sejam numéricos nem palavras soltas de metadata
-            SKIP_KEYWORDS = {"semanas", "no", "tnt", última", "semana", "em", "novo", "entrada", "=", "↑", "↓"}
+            SKIP_KEYWORDS = {"semanas", "no", "tnt", "ultima", "semana", "em", "novo", "entrada", "=", "^", "v"}
             texts = []
             for child in inside.children:
                 if hasattr(child, "get_text"):
@@ -137,7 +137,7 @@ def scrape_comercial_tnt() -> list[dict]:
                 artist = texts[1]
             elif len(texts) == 1:
                 # Último recurso: tentar separar por " - " ou " — "
-                sep = " — " if " — " in texts[0] else " - "
+                sep = " \u2014 " if " \u2014 " in texts[0] else " - "
                 parts = texts[0].split(sep, 1)
                 title  = parts[0].strip()
                 artist = parts[1].strip() if len(parts) > 1 else "Desconhecido"
@@ -175,7 +175,7 @@ def replace_playlist(token: str, playlist_id: str, uris: list[str]) -> None:
 
 
 def main() -> None:
-    print("=== Rádio Comercial TNT Top 20 → Spotify ===")
+    print("=== Rádio Comercial TNT Top 20 -> Spotify ===")
 
     print("\n[1/3] A raspar radiocomercial.pt...")
     tracks = scrape_comercial_tnt()
@@ -184,7 +184,7 @@ def main() -> None:
         sys.exit(1)
     print(f"  {len(tracks)} tracks encontrados:")
     for t in tracks:
-        print(f"  {t['position']:2d}. {t['artist']} — {t['title']}")
+        print(f"  {t['position']:2d}. {t['artist']} - {t['title']}")
 
     print("\n[2/3] A pesquisar no Spotify...")
     token = get_access_token()
@@ -194,8 +194,8 @@ def main() -> None:
     uris, not_found = [], []
     for t in tracks:
         uri = search_spotify(token, t["artist"], t["title"])
-        status = "✓" if uri else "✗"
-        print(f"  {status} {t['position']:2d}. {t['artist']} — {t['title']}")
+        status = "ok" if uri else "nao encontrado"
+        print(f"  [{status}] {t['position']:2d}. {t['artist']} - {t['title']}")
         if uri:
             uris.append(uri)
         else:
@@ -210,12 +210,12 @@ def main() -> None:
     playlist_id = os.environ["SPOTIFY_COMERCIAL_PLAYLIST_ID"]
     print(f"\n[3/3] A actualizar playlist {playlist_id}...")
     replace_playlist(token, playlist_id, uris)
-    print("  Playlist actualizada com sucesso! ✓")
+    print("  Playlist actualizada com sucesso!")
 
     now = datetime.datetime.utcnow().strftime("%d/%m/%Y %H:%M UTC")
     playlist_url = f"https://open.spotify.com/playlist/{playlist_id}"
     summary = [
-        "## 🎵 Rádio Comercial TNT Top 20 → Spotify",
+        "## Rádio Comercial TNT Top 20 -> Spotify",
         f"> Actualizado em **{now}** &nbsp;—&nbsp; [{playlist_id}]({playlist_url})",
         "",
         f"**{len(uris)}/{len(tracks)} tracks** adicionados com sucesso.",
@@ -225,10 +225,10 @@ def main() -> None:
     ]
     for t in tracks:
         found = not any(nf["position"] == t["position"] for nf in not_found)
-        estado = "✅" if found else "❌ não encontrado"
+        estado = "OK" if found else "nao encontrado"
         summary.append(f"| {t['position']} | {t['artist']} | {t['title']} | {estado} |")
     if not_found:
-        summary += ["", f"⚠️ {len(not_found)} track(s) não encontrados no Spotify."]
+        summary += ["", f"Atencao: {len(not_found)} track(s) nao encontrados no Spotify."]
     write_summary(summary)
 
 
