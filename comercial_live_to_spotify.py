@@ -55,7 +55,6 @@ def fetch_tracks() -> list[dict]:
     }
     utc_now       = datetime.datetime.now(datetime.UTC)
     lisbon_offset = 2 if 3 < utc_now.month < 11 else 1
-    # hora de Lisboa como naive (o JSON da Comercial nao tem timezone)
     lisbon_now    = (utc_now + datetime.timedelta(hours=lisbon_offset)).replace(tzinfo=None)
     cutoff        = lisbon_now - datetime.timedelta(hours=WINDOW_HOURS)
     date_str      = lisbon_now.strftime("%Y-%m-%d")
@@ -162,20 +161,25 @@ def main() -> None:
     print(f"  {len(current_uris)} tracks na playlist")
 
     print(f"\nA pesquisar {len(raw_tracks)} tracks no Spotify...")
-    new_uris, added, skipped, not_found = [], [], [], []
+    # Guardar estado de cada track para o summary
+    results   = []   # [{"track": t, "status": "added"|"skipped"|"not_found"}]
+    new_uris  = []
     for t in raw_tracks:
         uri = search_track(token, t["artist"], t["title"])
         if not uri:
-            not_found.append(t)
+            results.append({"track": t, "status": "not_found"})
             print(f"  \u2717 {t['artist']} - {t['title']}")
         elif uri in current_set:
-            skipped.append(t)
+            results.append({"track": t, "status": "skipped"})
             print(f"  ~ {t['artist']} - {t['title']} (ja existe)")
         else:
+            results.append({"track": t, "status": "added", "uri": uri})
             new_uris.append(uri)
-            added.append(t)
             print(f"  \u2713 {t['artist']} - {t['title']}")
 
+    added     = [r for r in results if r["status"] == "added"]
+    skipped   = [r for r in results if r["status"] == "skipped"]
+    not_found = [r for r in results if r["status"] == "not_found"]
     print(f"\nNovos: {len(added)} | Ja na playlist: {len(skipped)} | Nao encontrados: {len(not_found)}")
 
     slots_needed          = min(len(new_uris), PLAYLIST_LIMIT)
@@ -184,7 +188,6 @@ def main() -> None:
     if new_uris:
         space    = PLAYLIST_LIMIT - len(current_uris)
         new_uris = new_uris[:space]
-        added    = added[:space]
         print(f"  A adicionar {len(new_uris)} tracks...")
         add_items(token, playlist_id, new_uris)
         print("Playlist actualizada!")
@@ -193,23 +196,23 @@ def main() -> None:
 
     now          = datetime.datetime.now(datetime.UTC).strftime("%d/%m/%Y %H:%M UTC")
     playlist_url = f"https://open.spotify.com/playlist/{playlist_id}"
+
+    status_label = {"added": "✅ adicionado", "skipped": "⏭️ ja existe", "not_found": "❌ nao encontrado"}
     summary = [
         "## Radio Comercial Live -> Spotify",
-        f"> {now} | [Abrir playlist]({playlist_url})",
+        f"> Actualizado em **{now}** &nbsp;—&nbsp; [Abrir playlist]({playlist_url})",
         "",
-        "| Novos | Ja existentes | Nao encontrados |",
+        f"**{len(added)}/{len(raw_tracks)} tracks** adicionados &nbsp;|&nbsp; {len(skipped)} ja existentes &nbsp;|&nbsp; {len(not_found)} nao encontrados",
+        "",
+        "| Artista | Musica | Estado |",
         "|---|---|---|",
-        f"| {len(added)} | {len(skipped)} | {len(not_found)} |",
-        "",
     ]
-    if added:
-        summary += ["### Adicionados", "| Artista | Musica |", "|---|---|"] + \
-                   [f"| {t['artist']} | {t['title']} |" for t in added] + [""]
-    if not_found:
-        summary += ["### Nao encontrados no Spotify"] + \
-                   [f"- {t['artist']} - {t['title']}" for t in not_found] + [""]
+    for r in results:
+        t = r["track"]
+        summary.append(f"| {t['artist']} | {t['title']} | {status_label[r['status']]} |")
+
     if removed_count:
-        summary.append(f"_{removed_count} tracks antigos removidos (limite {PLAYLIST_LIMIT})._")
+        summary += ["", f"_{removed_count} tracks antigos removidos para manter limite de {PLAYLIST_LIMIT}._"]
 
     write_summary(summary)
 
