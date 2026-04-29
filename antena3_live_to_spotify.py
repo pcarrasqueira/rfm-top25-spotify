@@ -7,6 +7,7 @@ e sem duplicados. Corre hora a hora via GitHub Actions.
 Entradas cujo titulo OU artista coincida com um programa da grelha EPG da Antena 3 sao
 automaticamente ignoradas (ex: "Manhãs da 3", "Logo Se Vê", "Portugália", etc.)
 O campo de hora e detectado dinamicamente (pode estar em qualquer posicao da linha).
+Estrutura da pagina: [Artista, HH:MM, Titulo]
 """
 
 import os
@@ -130,8 +131,10 @@ def fetch_tracks() -> list[dict]:
         if len(remaining) < 2:
             continue
 
-        title  = remaining[0]
-        artist = remaining[1]
+        # Estrutura da pagina: [Artista, HH:MM, Titulo]
+        # Depois de remover a hora: remaining[0]=artista, remaining[1]=titulo
+        artist = remaining[0]
+        title  = remaining[1]
 
         # Filtrar programas da grelha EPG (verificar title e artist)
         if epg_programs and (
