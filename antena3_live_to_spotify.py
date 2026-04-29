@@ -4,11 +4,13 @@ Scrapa o historial de musicas tocadas na Antena 3 (antena3.rtp.pt/ja-tocou/)
 e adiciona as novas a uma playlist Spotify, mantendo um limite de 300 tracks
 e sem duplicados. Corre hora a hora via GitHub Actions.
 
-Entradas cujo titulo coincida com um programa da grelha EPG da Antena 3 sao
-automaticamente ignoradas (ex: "Manhãs da 3", "Logo Se Vê", etc.)
+Entradas cujo titulo OU artista coincida com um programa da grelha EPG da Antena 3 sao
+automaticamente ignoradas (ex: "Manhãs da 3", "Logo Se Vê", "Portugália", etc.)
+Entradas com titulo no formato HH:MM (hora) sao tambem ignoradas.
 """
 
 import os
+import re
 import sys
 import time
 import datetime
@@ -23,6 +25,7 @@ ANTENA3_URL            = "https://antena3.rtp.pt/ja-tocou/"
 EPG_URL                = "https://www.rtp.pt/EPG/json/rtp-channels-page/list-grid/radio/3/{date}"
 PLAYLIST_LIMIT         = 300
 WINDOW_HOURS           = 3
+TIME_RE                = re.compile(r"^\d{1,2}:\d{2}$")
 
 
 def write_summary(lines: list[str]) -> None:
@@ -73,6 +76,16 @@ def get_epg_program_names(lisbon_date: datetime.date) -> set[str]:
     return names
 
 
+def is_epg_entry(title: str, artist: str, epg_programs: set[str]) -> bool:
+    """Devolve True se o titulo OU o artista corresponde a um programa EPG,
+    ou se o titulo parece uma hora (HH:MM)."""
+    if TIME_RE.match(title.strip()):
+        return True
+    if not epg_programs:
+        return False
+    return normalize(title) in epg_programs or normalize(artist) in epg_programs
+
+
 def get_access_token() -> str:
     resp = requests.post(
         SPOTIFY_TOKEN_URL,
@@ -120,7 +133,7 @@ def fetch_tracks() -> list[dict]:
         title    = parts[1]
         artist   = parts[2]
 
-        if epg_programs and normalize(title) in epg_programs:
+        if is_epg_entry(title, artist, epg_programs):
             skipped_epg += 1
             continue
 
@@ -142,7 +155,7 @@ def fetch_tracks() -> list[dict]:
             tracks.append({"artist": artist, "title": title})
 
     if skipped_epg:
-        print(f"  {skipped_epg} entradas ignoradas por serem programas da grelha EPG")
+        print(f"  {skipped_epg} entradas ignoradas (programas EPG ou hora invalida)")
     print(f"  {len(tracks)} tracks unicos nas ultimas {WINDOW_HOURS}h")
     return tracks
 
