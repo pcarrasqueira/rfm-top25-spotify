@@ -1,37 +1,27 @@
 #!/usr/bin/env python3
 """
-Scrapa o Top 25 RFM em https://rfm.pt/top25rfm
-e actualiza a playlist Spotify indicada.
+Scrapa o RFM Top 25 em https://rfm.pt/top25rfm
+e atualiza a playlist Spotify indicada.
 
-Estrutura HTML da página (confirmada em Abril 2026):
-  <ul>
-    <li>1</li>          <- posição (número solto)
-    <li>
-      <ul>
-        <li>Artista</li>
-        <li>Título</li>
-      </ul>
-    </li>
-    <li>2</li>
-    ...
-  </ul>
-
-API Spotify:
-  - PUT /playlists/{id}/items com {"uris": [...]} substitui todos os items (max 100)
-  - GET /search limit máximo 10
+Nota API Spotify (Fev 2026):
+  - GET/POST/DELETE usam /playlists/{id}/items (o antigo /tracks foi removido)
+  - DELETE espera body: {"items": [{"uri": "spotify:track:xxx"}, ...]}
+  - PUT /playlists/{id}/items com {"uris": [...]} substitui todos os items de uma vez (max 100)
+  - GET /search tem limit máximo de 10
 """
 
 import os
-import re
 import sys
+import time
+import datetime
 import requests
 from bs4 import BeautifulSoup
 
 SPOTIFY_TOKEN_URL      = "https://accounts.spotify.com/api/token"
 SPOTIFY_SEARCH_URL     = "https://api.spotify.com/v1/search"
 SPOTIFY_PLAYLIST_ITEMS = "https://api.spotify.com/v1/playlists/{id}/items"
+SPOTIFY_ME_URL         = "https://api.spotify.com/v1/me"
 RFM_URL                = "https://rfm.pt/top25rfm"
-PLAYLIST_ID            = os.environ.get("SPOTIFY_PLAYLIST_ID", "5Bgp9ddbbmwNkbzAFy5SSC")
 
 
 def write_summary(lines: list[str]) -> None:
@@ -50,7 +40,7 @@ def spotify_request(method: str, url: str, token: str, **kwargs) -> requests.Res
     resp = requests.request(method, url, headers=headers, timeout=15, **kwargs)
     if not resp.ok:
         print(f"  HTTP {resp.status_code} {method} {url}")
-        print(f"  Body: {resp.text[:500]}")
+        print(f"  Response body: {resp.text[:500]}")
         resp.raise_for_status()
     return resp
 
@@ -71,162 +61,125 @@ def get_access_token() -> str:
 
 
 def scrape_rfm_top25() -> list[dict]:
-    """
-    Raspa o Top 25 do rfm.pt/top25rfm.
-
-    A estrutura real da página é uma <ul> principal onde os filhos directos <li>
-    alternam entre:
-      - um <li> com texto numérico (a posição)
-      - um <li> que contém um <ul> com dois <li>: artista e título
-
-    Exemplo simplificado:
-      <ul>
-        <li>1</li>
-        <li><ul><li>Miley Cyrus</li><li>Dream As One</li></ul></li>
-        <li>2</li>
-        <li><ul><li>Bandidos do Cante</li><li>Rosa</li></ul></li>
-        ...
-      </ul>
-    """
-    headers = {
-        "User-Agent": "Mozilla/5.0 (compatible; rfm-top25-spotify-bot/2.0)",
-        "Accept-Language": "pt-PT,pt;q=0.9",
-    }
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; rfm-top25-spotify-bot/1.0)"}
     resp = requests.get(RFM_URL, headers=headers, timeout=20)
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, "lxml")
 
     tracks = []
-
-    # Encontra todos os <li> que contêm um <ul> interno com exactamente 2 filhos <li>
-    # (artista + título), e tenta fazer match com o número de posição que vem antes.
-    all_top_level_li = []
-    for ul in soup.find_all("ul"):
-        children = [li for li in ul.find_all("li", recursive=False)]
-        # Queremos a lista principal que tenha pelo menos 25 entradas e
-        # cujos filhos sigam o padrão número / sub-lista
-        numeric_children = sum(1 for li in children if re.match(r'^\s*\d+\s*$', li.get_text()))
-        if numeric_children >= 10:
-            all_top_level_li = children
-            break
-
-    pos = None
-    for li in all_top_level_li:
-        text = li.get_text(strip=True)
-        # É um <li> de posição?
-        if re.match(r'^\d+$', text):
-            pos = int(text)
+    for ul in soup.select("ul.g-mx"):
+        pos_el  = ul.select_one("li.t-pos")
+        desc_el = ul.select_one("li.t-desc")
+        if not pos_el or not desc_el:
             continue
-        # É um <li> com sub-lista artista/título?
-        sub_ul = li.find("ul")
-        if sub_ul and pos is not None:
-            sub_items = sub_ul.find_all("li", recursive=False)
-            if len(sub_items) >= 2:
-                artist = sub_items[0].get_text(separator=" ", strip=True)
-                title  = sub_items[1].get_text(separator=" ", strip=True)
-                if artist and title:
-                    tracks.append({"position": pos, "artist": artist, "title": title})
-            pos = None
-
-    # Fallback: se a estratégia acima falhar, tenta pares de <li> consecutivos
-    # onde o primeiro é número e o segundo tem artista e título separados por texto
-    if not tracks:
-        print("  [WARN] Estratégia principal falhou, a tentar fallback por texto...")
-        for ul in soup.find_all("ul"):
-            items = ul.find_all("li", recursive=False)
-            i = 0
-            while i < len(items) - 1:
-                pos_text = items[i].get_text(strip=True)
-                if re.match(r'^\d+$', pos_text):
-                    combined = items[i + 1].get_text(separator="|", strip=True)
-                    parts = combined.split("|")
-                    parts = [p.strip() for p in parts if p.strip()]
-                    if len(parts) >= 2:
-                        tracks.append({
-                            "position": int(pos_text),
-                            "artist":   parts[0],
-                            "title":    parts[1],
-                        })
-                        i += 2
-                        continue
-                i += 1
-            if len(tracks) >= 10:
-                break
-
+        position = pos_el.get_text(strip=True)
+        if not position.isdigit():
+            continue
+        lis = desc_el.select("ul.unstyled li")
+        if len(lis) >= 2:
+            tracks.append({
+                "position": int(position),
+                "artist":   lis[0].get_text(strip=True),
+                "title":    lis[1].get_text(strip=True),
+            })
     return sorted(tracks, key=lambda x: x["position"])
 
 
 def search_spotify(token: str, artist: str, title: str) -> str | None:
-    """Pesquisa uma track no Spotify, tenta várias combinações."""
-    queries = [
-        f'track:"{title}" artist:"{artist}"',
-        f'{title} {artist}',
-        f'{title}',
-    ]
-    for q in queries:
-        params = {"q": q, "type": "track", "limit": 5, "market": "PT"}
-        resp = spotify_request("GET", SPOTIFY_SEARCH_URL, token, params=params)
-        items = resp.json().get("tracks", {}).get("items", [])
-        if items:
-            return items[0]["uri"]
-    return None
+    params = {"q": f"track:{title} artist:{artist}", "type": "track", "limit": 10, "market": "PT"}
+    resp  = spotify_request("GET", SPOTIFY_SEARCH_URL, token, params=params)
+    items = resp.json().get("tracks", {}).get("items", [])
+    if items:
+        return items[0]["uri"]
+    # fallback: pesquisa simples
+    params["q"] = f"{artist} {title}"
+    resp  = spotify_request("GET", SPOTIFY_SEARCH_URL, token, params=params)
+    items = resp.json().get("tracks", {}).get("items", [])
+    return items[0]["uri"] if items else None
 
 
-def update_playlist(token: str, playlist_id: str, uris: list[str]) -> None:
+def replace_playlist(token: str, playlist_id: str, uris: list[str]) -> None:
+    """Substitui o conteudo completo da playlist usando PUT (max 100 tracks).
+    Para mais de 100 tracks: PUT com os primeiros 100, POST com o resto.
+    O Top 25 cabe sempre num unico PUT.
+    """
     url = SPOTIFY_PLAYLIST_ITEMS.format(id=playlist_id)
-    # PUT substitui todos os items de uma vez (max 100)
+    # PUT substitui tudo de uma vez (até 100 uris)
     spotify_request("PUT", url, token, json={"uris": uris[:100]})
+    # Se houver mais de 100 (improvável no Top 25), adiciona o resto
+    for i in range(100, len(uris), 100):
+        spotify_request("POST", url, token, json={"uris": uris[i:i + 100], "position": i})
+        time.sleep(0.2)
 
 
 def main() -> None:
     print("=== RFM Top 25 → Spotify ===")
 
-    print("\n[1/3] A raspar rfm.pt/top25rfm...")
+    # 1. Scrape RFM
+    print("\nA scraper o RFM Top 25...")
     tracks = scrape_rfm_top25()
-
     if not tracks:
-        print("ERRO: Nenhuma track encontrada. Verificar estrutura da página.")
+        print("ERRO: Não foi possível obter os tracks do RFM.")
         sys.exit(1)
-
-    print(f"  {len(tracks)} tracks encontradas:")
+    print(f"{len(tracks)} tracks encontrados:")
     for t in tracks:
-        print(f"  {t['position']:2d}. {t['artist']} — {t['title']}")
+        print(f"  {t['position']:2}. {t['artist']} — {t['title']}")
 
-    print("\n[2/3] A pesquisar no Spotify...")
+    # 2. Auth
+    print("\nA obter access token Spotify...")
     token = get_access_token()
-    uris = []
-    found_log = []
-    not_found = []
+    print("Token obtido com sucesso.")
 
+    # 3. Verificar conta
+    me = spotify_request("GET", SPOTIFY_ME_URL, token).json()
+    print(f"  Conta: {me.get('display_name')} ({me.get('id')})")
+
+    # 4. Pesquisar tracks
+    print("\nA pesquisar tracks no Spotify...")
+    uris, not_found = [], []
     for t in tracks:
         uri = search_spotify(token, t["artist"], t["title"])
-        status = "✓" if uri else "✗"
-        print(f"  {status} {t['position']:2d}. {t['artist']} — {t['title']}")
         if uri:
             uris.append(uri)
-            found_log.append(f"| {t['position']} | {t['artist']} | {t['title']} | ✅ |")
+            print(f"  ✓ {t['artist']} — {t['title']}")
         else:
-            not_found.append(f"| {t['position']} | {t['artist']} | {t['title']} | ❌ |")
-
-    print(f"\n  Encontradas: {len(uris)}/{len(tracks)}")
+            not_found.append(t)
+            print(f"  ✗ {t['artist']} — {t['title']} (não encontrado)")
+        time.sleep(0.1)
 
     if not uris:
-        print("ERRO: Nenhuma track encontrada no Spotify.")
+        print("ERRO: Nenhum track encontrado no Spotify.")
         sys.exit(1)
 
-    print("\n[3/3] A actualizar playlist Spotify...")
-    update_playlist(token, PLAYLIST_ID, uris)
-    print(f"  Playlist {PLAYLIST_ID} actualizada com {len(uris)} tracks.")
+    # 5. Substituir playlist (PUT em vez de DELETE + POST)
+    playlist_id = os.environ["SPOTIFY_PLAYLIST_ID"]
+    print(f"\nA substituir playlist com {len(uris)} tracks...")
+    replace_playlist(token, playlist_id, uris)
+    print("Playlist atualizada com sucesso! ✓")
 
-    # GitHub Actions Step Summary
+    # 6. Job Summary
+    now = datetime.datetime.utcnow().strftime("%d/%m/%Y %H:%M UTC")
+    playlist_url = f"https://open.spotify.com/playlist/{playlist_id}"
     summary = [
-        "## RFM Top 25 → Spotify",
-        f"",
-        f"**{len(uris)}/{len(tracks)} tracks** adicionadas à playlist.",
+        "## 🎵 RFM Top 25 → Spotify",
+        f"> Atualizado em **{now}** &nbsp;—&nbsp; [{playlist_id}]({playlist_url})",
         "",
-        "| # | Artista | Título | Spotify |",
-        "|---|---------|--------|---------|",
-    ] + found_log + not_found
+        f"**{len(uris)}/{len(tracks)} tracks** adicionados com sucesso.",
+        "",
+        "| # | Artista | Música | Estado |",
+        "|---|---|---|---|",
+    ]
+    for t in tracks:
+        found = not any(nf["position"] == t["position"] for nf in not_found)
+        estado = "✅" if found else "❌ não encontrado"
+        summary.append(f"| {t['position']} | {t['artist']} | {t['title']} | {estado} |")
+
+    if not_found:
+        summary += [
+            "",
+            f"⚠️ {len(not_found)} track(s) não encontrados no Spotify.",
+        ]
+
     write_summary(summary)
 
 
