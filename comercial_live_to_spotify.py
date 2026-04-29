@@ -2,10 +2,6 @@
 """
 Recolhe as musicas tocadas na Radio Comercial nas ultimas 2h via API JSON:
   https://radiocomercial.pt/now_playing_logs/json/radio-comercial_YYYY-MM-DD.json
-
-O campo DATE de cada registo esta em hora de Lisboa (Europe/Lisbon).
-Filtramos tudo com DATE >= agora - 2h para corresponder ao intervalo
-entre execucoes hora-a-hora (com margem de 1h extra para sobreposicao).
 """
 
 import os
@@ -19,7 +15,7 @@ SPOTIFY_SEARCH_URL     = "https://api.spotify.com/v1/search"
 SPOTIFY_PLAYLIST_ITEMS = "https://api.spotify.com/v1/playlists/{id}/items"
 COMERCIAL_LOG_URL      = "https://radiocomercial.pt/now_playing_logs/json/radio-comercial_{date}.json"
 PLAYLIST_LIMIT         = 300
-WINDOW_HOURS           = 2   # janela de tempo a processar
+WINDOW_HOURS           = 2
 
 
 def write_summary(lines: list[str]) -> None:
@@ -110,11 +106,11 @@ def search_track(token: str, artist: str, title: str) -> str | None:
 def get_playlist_uris(token: str, playlist_id: str) -> list[str]:
     url    = SPOTIFY_PLAYLIST_ITEMS.format(id=playlist_id)
     uris   = []
-    params = {"fields": "next,items(track(uri))", "limit": 100}
+    params = {"limit": 100}
     while url:
         data = spotify("GET", url, token, params=params).json()
         for e in data.get("items", []):
-            track = e.get("track")
+            track = (e or {}).get("track")
             if track and track.get("uri"):
                 uris.append(track["uri"])
         url    = data.get("next")
@@ -136,17 +132,12 @@ def add_items(token: str, playlist_id: str, uris: list[str]) -> None:
 
 
 def trim_playlist(token: str, playlist_id: str, current_uris: list[str], slots_needed: int) -> tuple[list[str], int]:
-    """
-    Garante que a playlist tem espaco para slots_needed novos tracks.
-    Remove os mais antigos (fim da lista) se necessario.
-    Devolve a lista de uris actualizada e o numero de tracks removidos.
-    """
-    target      = PLAYLIST_LIMIT - slots_needed
-    removed     = 0
+    target  = PLAYLIST_LIMIT - slots_needed
+    removed = 0
     if len(current_uris) > target:
-        overflow    = len(current_uris) - target
-        to_remove   = current_uris[-overflow:]
-        removed     = len(to_remove)
+        overflow     = len(current_uris) - target
+        to_remove    = current_uris[-overflow:]
+        removed      = len(to_remove)
         print(f"  A remover {removed} tracks antigos para libertar espaco...")
         remove_items(token, playlist_id, to_remove)
         current_uris = current_uris[:-overflow]
@@ -196,12 +187,11 @@ def main() -> None:
 
     print(f"\nNovos: {len(added)} | Ja na playlist: {len(skipped)} | Nao encontrados: {len(not_found)}")
 
-    # Trim sempre -- independente de haver tracks novos ou nao
-    slots_needed  = min(len(new_uris), PLAYLIST_LIMIT)
+    # Trim sempre, independente de haver tracks novos
+    slots_needed          = min(len(new_uris), PLAYLIST_LIMIT)
     current_uris, removed_count = trim_playlist(token, playlist_id, current_uris, slots_needed)
 
     if new_uris:
-        # Limitar new_uris ao espaco disponivel (salvaguarda extra)
         space    = PLAYLIST_LIMIT - len(current_uris)
         new_uris = new_uris[:space]
         added    = added[:space]
