@@ -7,8 +7,9 @@ e sem duplicados. Corre hora a hora via GitHub Actions.
 Entradas cujo titulo OU artista coincida com um programa da grelha EPG da Antena 3 sao
 automaticamente ignoradas (ex: "Manhãs da 3", "Logo Se Vê", "Portugália", etc.)
 
-Estrutura de cada <li> na pagina: [HH:MM, Titulo, Artista]
-O selector aponta so a lista de musicas (ul apos h1 'Ja tocou').
+Estrutura de cada <li> na pagina: ['HH:MM', 'HH:MM', 'Titulo', 'Artista']
+O horario aparece duplicado no HTML - filtramos todos os tokens que sao HH:MM.
+O UL das musicas tem class='list-unstyled m-0' e 100+ items.
 """
 
 import os
@@ -40,7 +41,6 @@ def write_summary(lines: list[str]) -> None:
 
 
 def normalize(text: str) -> str:
-    """Lowercase + remove acentos para comparacao robusta."""
     nfkd = unicodedata.normalize("NFKD", text.lower().strip())
     return "".join(c for c in nfkd if not unicodedata.combining(c))
 
@@ -93,6 +93,17 @@ def spotify(method: str, url: str, token: str, **kwargs) -> requests.Response:
     return resp
 
 
+def get_song_ul(soup: BeautifulSoup):
+    """Encontra o <ul> principal da lista de musicas (100+ items, class list-unstyled)."""
+    for ul in soup.find_all("ul"):
+        lis = ul.find_all("li", recursive=False)
+        if len(lis) > 50:
+            sample = [li.get_text(strip=True) for li in lis[:5]]
+            if any(TIME_RE.search(t) for t in sample):
+                return ul
+    return None
+
+
 def fetch_tracks() -> list[dict]:
     headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"}
 
@@ -107,23 +118,8 @@ def fetch_tracks() -> list[dict]:
     resp = requests.get(ANTENA3_URL, headers=headers, timeout=20)
     resp.raise_for_status()
 
-    soup = BeautifulSoup(resp.text, "lxml")
-
-    # Encontrar o <ul> especifico da lista 'Ja tocou' (logo apos o <h1>)
-    song_list = None
-    for h1 in soup.find_all("h1"):
-        if "tocou" in h1.get_text(strip=True).lower():
-            song_list = h1.find_next_sibling("ul")
-            break
-
-    if not song_list:
-        # Fallback: primeiro <ul> com pelo menos um <li> que contenha um HH:MM
-        print("  [WARN] Nao encontrei <h1>Ja tocou</h1> - a usar fallback")
-        for ul in soup.find_all("ul"):
-            lis = ul.find_all("li", recursive=False)
-            if any(TIME_RE.search(li.get_text()) for li in lis):
-                song_list = ul
-                break
+    soup      = BeautifulSoup(resp.text, "lxml")
+    song_list = get_song_ul(soup)
 
     if not song_list:
         print("  [ERROR] Lista de musicas nao encontrada na pagina")
@@ -132,38 +128,30 @@ def fetch_tracks() -> list[dict]:
     seen        = set()
     tracks      = []
     skipped_epg = 0
-    total_li    = 0
 
     for li in song_list.find_all("li", recursive=False):
-        parts    = [t.strip() for t in li.stripped_strings]
-        total_li += 1
+        parts = [t.strip() for t in li.stripped_strings]
 
-        # Campo de hora (HH:MM) normalmente em parts[0]
-        time_idx = next((i for i, p in enumerate(parts) if TIME_RE.match(p)), None)
-        if time_idx is None:
-            if DEBUG:
-                print(f"  [DBG] sem hora: {parts}")
+        # Cada <li> tem a hora duplicada: ['HH:MM', 'HH:MM', 'Titulo', 'Artista']
+        # Separar tokens de hora dos tokens de conteudo
+        time_tokens    = [p for p in parts if TIME_RE.match(p)]
+        content_tokens = [p for p in parts if not TIME_RE.match(p)]
+
+        if not time_tokens or not content_tokens:
             continue
 
-        time_str  = parts[time_idx]
-        remaining = [p for i, p in enumerate(parts) if i != time_idx]
-        if not remaining:
-            continue
-
-        # Estrutura: [HH:MM, Titulo, Artista]
-        title  = remaining[0]
-        artist = remaining[1] if len(remaining) > 1 else ""
+        time_str = time_tokens[0]
+        title    = content_tokens[0]
+        artist   = content_tokens[1] if len(content_tokens) > 1 else ""
 
         if DEBUG:
             print(f"  [DBG] {time_str} | titulo={title!r} | artista={artist!r}")
 
         if epg_programs and (
-            normalize(title)  in epg_programs or
+            normalize(title) in epg_programs or
             (artist and normalize(artist) in epg_programs)
         ):
             skipped_epg += 1
-            if DEBUG:
-                print(f"  [DBG] EPG filtrado: {title!r} / {artist!r}")
             continue
 
         try:
@@ -176,8 +164,6 @@ def fetch_tracks() -> list[dict]:
             continue
 
         if rec_dt < cutoff:
-            if DEBUG:
-                print(f"  [DBG] fora janela ({rec_dt.strftime('%H:%M')} < {cutoff.strftime('%H:%M')}): {title!r}")
             continue
 
         key = (title.upper(), artist.upper())
@@ -185,8 +171,6 @@ def fetch_tracks() -> list[dict]:
             seen.add(key)
             tracks.append({"artist": artist, "title": title})
 
-    if DEBUG:
-        print(f"  [DBG] total <li> processados: {total_li}")
     if skipped_epg:
         print(f"  {skipped_epg} entradas ignoradas (programas EPG)")
     print(f"  {len(tracks)} tracks unicos nas ultimas {WINDOW_HOURS}h")
