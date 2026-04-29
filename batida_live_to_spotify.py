@@ -11,7 +11,7 @@ Estrutura da resposta (array de eventos):
     {
       "nowPlayingTrack":  "Woman",
       "nowPlayingArtist": "Little Simz",
-      "nowPlayingTime":   "2026-04-29 23:29:30",
+      "nowPlayingTime":   "2026-04-29 23:29:30",  <- hora de Lisboa (WEST)
       ...
     },
     ...
@@ -24,6 +24,7 @@ import time
 import datetime
 import requests
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 SPOTIFY_TOKEN_URL      = "https://accounts.spotify.com/api/token"
 SPOTIFY_SEARCH_URL     = "https://api.spotify.com/v1/search"
@@ -33,6 +34,7 @@ API_EVENT_COUNT        = 100
 PLAYLIST_LIMIT         = 300
 WINDOW_HOURS           = 1
 MAX_RETRIES            = 5
+LISBON_TZ              = ZoneInfo("Europe/Lisbon")
 
 
 def write_summary(lines: list[str]) -> None:
@@ -79,10 +81,9 @@ def fetch_tracks() -> list[dict]:
         "Origin": "https://rayo.pt",
         "Referer": "https://rayo.pt/",
     }
-    utc_now       = datetime.datetime.now(datetime.UTC)
-    lisbon_offset = 2 if 3 < utc_now.month < 11 else 1
-    lisbon_now    = (utc_now + datetime.timedelta(hours=lisbon_offset)).replace(tzinfo=None)
-    cutoff        = lisbon_now - datetime.timedelta(hours=WINDOW_HOURS)
+    # hora actual em Lisboa (trata DST automaticamente: WEST=UTC+1, WET=UTC+0)
+    lisbon_now = datetime.datetime.now(LISBON_TZ)
+    cutoff     = lisbon_now - datetime.timedelta(hours=WINDOW_HOURS)
 
     dt_str  = lisbon_now.strftime("%Y-%m-%d %H:%M:%S")
     api_url = PLANETRADIO_API.format(
@@ -108,10 +109,12 @@ def fetch_tracks() -> list[dict]:
         artist = (ev.get("nowPlayingArtist") or "").strip()
         if not title or not artist:
             continue
+        # nowPlayingTime esta em hora de Lisboa (naive) - comparar directamente
         start_raw = (ev.get("nowPlayingTime") or "")
         if start_raw:
             try:
                 ev_dt = datetime.datetime.strptime(start_raw[:19], "%Y-%m-%d %H:%M:%S")
+                ev_dt = ev_dt.replace(tzinfo=LISBON_TZ)
                 if ev_dt < cutoff:
                     continue
             except ValueError:
