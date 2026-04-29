@@ -187,7 +187,7 @@ def main() -> None:
 
     print("\nA autenticar no Spotify...")
     token       = get_access_token()
-    playlist_id = os.environ["SPOTIFY_BATIDA_LIVE_PLAYLIST_ID")
+    playlist_id = os.environ["SPOTIFY_BATIDA_LIVE_PLAYLIST_ID"]
 
     print("\nA ler playlist actual...")
     current_uris = get_playlist_uris(token, playlist_id)
