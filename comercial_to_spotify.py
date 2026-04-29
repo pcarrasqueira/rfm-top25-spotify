@@ -1,15 +1,26 @@
 #!/usr/bin/env python3
 """
 Scrapa o TNT Top 20 da Rádio Comercial em https://radiocomercial.pt/programas/tnt-todos-no-top
-e atualiza a playlist Spotify indicada.
+e actualiza a playlist Spotify indicada.
 
-Nota API Spotify (Fev 2026):
-  - GET/POST/DELETE usam /playlists/{id}/items (o antigo /tracks foi removido)
-  - PUT /playlists/{id}/items com {"uris": [...]} substitui todos os items de uma vez (max 100)
-  - GET /search tem limit máximo de 10
+Estrutura HTML confirmada (Abril 2026):
+  <div class="inside">
+    <div class="songNumber">
+      <div>1</div>          <- posição
+      <div class="weeknumbers">...</div>
+    </div>
+    <div class="songTitle">Die On This Hill</div>   <- título
+    <div class="songArtist">Sienna Spiro</div>      <- artista
+    ...
+  </div>
+
+Nota API Spotify:
+  - PUT /playlists/{id}/items com {"uris": [...]} substitui todos os items (max 100)
+  - GET /search limit máximo 10
 """
 
 import os
+import re
 import sys
 import time
 import datetime
@@ -60,76 +71,99 @@ def get_access_token() -> str:
 
 
 def scrape_comercial_tnt() -> list[dict]:
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; comercial-tnt-spotify-bot/1.0)"}
+    """
+    Raspa o TNT Top 20 da Rádio Comercial.
+
+    Estrutura HTML real (confirmada Abril 2026):
+      <div class="inside">
+        <div class="songNumber"><div>N</div>...</div>
+        <div class="songTitle">Título</div>      (ou classe similar)
+        <div class="songArtist">Artista</div>    (ou classe similar)
+      </div>
+
+    Se as classes internas mudarem, o fallback extraí todos os textos do
+    div.inside e usa os primeiros dois campos não-numéricos como título/artista.
+    """
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; comercial-tnt-spotify-bot/2.0)",
+        "Accept-Language": "pt-PT,pt;q=0.9",
+    }
     resp = requests.get(COMERCIAL_URL, headers=headers, timeout=20)
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, "lxml")
 
     tracks = []
 
-    # Estratégia A: seletores de chart explícitos
-    for item in soup.select(".chart-list__item, .tnt-item, .top-item, .music-item"):
-        pos_el    = item.select_one(".position, .pos, .rank, .number")
-        artist_el = item.select_one(".artist, .singer, .band")
-        title_el  = item.select_one(".title, .song, .track-name, .music-title")
-        if pos_el and artist_el and title_el:
-            pos_text = pos_el.get_text(strip=True).replace(".", "").replace("º", "")
-            if pos_text.isdigit():
-                tracks.append({
-                    "position": int(pos_text),
-                    "artist":   artist_el.get_text(strip=True),
-                    "title":    title_el.get_text(strip=True),
-                })
+    for inside in soup.find_all("div", class_="inside"):
+        song_number_div = inside.find("div", class_="songNumber")
+        if not song_number_div:
+            continue
 
-    # Estratégia B: tabela com linhas numeradas
-    if not tracks:
-        for row in soup.select("table tr, .ranking tr"):
-            cells = row.find_all(["td", "th"])
-            if len(cells) >= 3:
-                pos_text = cells[0].get_text(strip=True).replace(".", "").replace("º", "")
-                if pos_text.isdigit():
-                    tracks.append({
-                        "position": int(pos_text),
-                        "artist":   cells[1].get_text(strip=True),
-                        "title":    cells[2].get_text(strip=True),
-                    })
+        # O número de posição é o primeiro <div> filho directo sem classe
+        pos_div = song_number_div.find("div", recursive=False)
+        if not pos_div:
+            continue
+        pos_text = pos_div.get_text(strip=True)
+        if not re.match(r'^\d+$', pos_text):
+            continue
+        pos = int(pos_text)
 
-    # Estratégia C: listas ordenadas com padrão "Artista - Título"
-    if not tracks:
-        for ol in soup.select("ol"):
-            for idx, li in enumerate(ol.find_all("li"), start=1):
-                text = li.get_text(separator=" | ", strip=True)
-                if " - " in text or " — " in text:
-                    sep = " — " if " — " in text else " - "
-                    parts = text.split(sep, 1)
-                    tracks.append({
-                        "position": idx,
-                        "artist":   parts[0].strip(),
-                        "title":    parts[1].strip(),
-                    })
+        # Tentativa 1: classes explícitas songTitle / songArtist
+        title_div  = inside.find("div", class_="songTitle")
+        artist_div = inside.find("div", class_="songArtist")
 
-    # Estratégia D: data-attributes
-    if not tracks:
-        for item in soup.select("[data-position], [data-rank]"):
-            pos = item.get("data-position") or item.get("data-rank", "")
-            art = item.get("data-artist", "") or ""
-            tit = item.get("data-title", "") or item.get("data-song", "") or ""
-            if pos.isdigit() and art and tit:
-                tracks.append({"position": int(pos), "artist": art, "title": tit})
+        if title_div and artist_div:
+            title  = title_div.get_text(strip=True)
+            artist = artist_div.get_text(strip=True)
+        else:
+            # Fallback: extrair todos os textos dos filhos directos do inside
+            # e pegar nos primeiros dois que não sejam numéricos nem palavras soltas de metadata
+            SKIP_KEYWORDS = {"semanas", "no", "tnt", última", "semana", "em", "novo", "entrada", "=", "↑", "↓"}
+            texts = []
+            for child in inside.children:
+                if hasattr(child, "get_text"):
+                    t = child.get_text(separator=" ", strip=True)
+                    # Ignorar o bloco da posição e blocos de números/keywords
+                    if child == song_number_div:
+                        continue
+                    # Ignorar tokens puramente numéricos ou keywords de metadata
+                    tokens = t.lower().split()
+                    if all(tok.isdigit() or tok in SKIP_KEYWORDS for tok in tokens if tok):
+                        continue
+                    if t:
+                        texts.append(t)
+            if len(texts) >= 2:
+                title  = texts[0]
+                artist = texts[1]
+            elif len(texts) == 1:
+                # Último recurso: tentar separar por " - " ou " — "
+                sep = " — " if " — " in texts[0] else " - "
+                parts = texts[0].split(sep, 1)
+                title  = parts[0].strip()
+                artist = parts[1].strip() if len(parts) > 1 else "Desconhecido"
+            else:
+                continue
+
+        if title and artist:
+            tracks.append({"position": pos, "title": title, "artist": artist})
 
     return sorted(tracks, key=lambda x: x["position"])
 
 
 def search_spotify(token: str, artist: str, title: str) -> str | None:
-    params = {"q": f"track:{title} artist:{artist}", "type": "track", "limit": 10, "market": "PT"}
-    resp  = spotify_request("GET", SPOTIFY_SEARCH_URL, token, params=params)
-    items = resp.json().get("tracks", {}).get("items", [])
-    if items:
-        return items[0]["uri"]
-    params["q"] = f"{artist} {title}"
-    resp  = spotify_request("GET", SPOTIFY_SEARCH_URL, token, params=params)
-    items = resp.json().get("tracks", {}).get("items", [])
-    return items[0]["uri"] if items else None
+    """Pesquisa uma track no Spotify com várias tentativas progressivas."""
+    queries = [
+        f'track:"{title}" artist:"{artist}"',
+        f'{title} {artist}',
+        f'{title}',
+    ]
+    for q in queries:
+        params = {"q": q, "type": "track", "limit": 5, "market": "PT"}
+        resp  = spotify_request("GET", SPOTIFY_SEARCH_URL, token, params=params)
+        items = resp.json().get("tracks", {}).get("items", [])
+        if items:
+            return items[0]["uri"]
+    return None
 
 
 def replace_playlist(token: str, playlist_id: str, uris: list[str]) -> None:
@@ -143,48 +177,46 @@ def replace_playlist(token: str, playlist_id: str, uris: list[str]) -> None:
 def main() -> None:
     print("=== Rádio Comercial TNT Top 20 → Spotify ===")
 
-    print("\nA scraper o TNT Top 20...")
+    print("\n[1/3] A raspar radiocomercial.pt...")
     tracks = scrape_comercial_tnt()
     if not tracks:
-        print("AVISO: Nenhum track encontrado — a página pode ter mudado a estrutura HTML.")
+        print("ERRO: Nenhum track encontrado. Verificar estrutura da página.")
         sys.exit(1)
-    print(f"{len(tracks)} tracks encontrados:")
+    print(f"  {len(tracks)} tracks encontrados:")
     for t in tracks:
-        print(f"  {t['position']:2}. {t['artist']} — {t['title']}")
+        print(f"  {t['position']:2d}. {t['artist']} — {t['title']}")
 
-    print("\nA obter access token Spotify...")
+    print("\n[2/3] A pesquisar no Spotify...")
     token = get_access_token()
-    print("Token obtido com sucesso.")
-
-    me = spotify_request("GET", SPOTIFY_ME_URL, token).json()
+    me    = spotify_request("GET", SPOTIFY_ME_URL, token).json()
     print(f"  Conta: {me.get('display_name')} ({me.get('id')})")
 
-    print("\nA pesquisar tracks no Spotify...")
     uris, not_found = [], []
     for t in tracks:
         uri = search_spotify(token, t["artist"], t["title"])
+        status = "✓" if uri else "✗"
+        print(f"  {status} {t['position']:2d}. {t['artist']} — {t['title']}")
         if uri:
             uris.append(uri)
-            print(f"  ✓ {t['artist']} — {t['title']}")
         else:
             not_found.append(t)
-            print(f"  ✗ {t['artist']} — {t['title']} (não encontrado)")
         time.sleep(0.1)
+    print(f"\n  Encontradas: {len(uris)}/{len(tracks)}")
 
     if not uris:
         print("ERRO: Nenhum track encontrado no Spotify.")
         sys.exit(1)
 
     playlist_id = os.environ["SPOTIFY_COMERCIAL_PLAYLIST_ID"]
-    print(f"\nA substituir playlist com {len(uris)} tracks...")
+    print(f"\n[3/3] A actualizar playlist {playlist_id}...")
     replace_playlist(token, playlist_id, uris)
-    print("Playlist atualizada com sucesso! ✓")
+    print("  Playlist actualizada com sucesso! ✓")
 
     now = datetime.datetime.utcnow().strftime("%d/%m/%Y %H:%M UTC")
     playlist_url = f"https://open.spotify.com/playlist/{playlist_id}"
     summary = [
         "## 🎵 Rádio Comercial TNT Top 20 → Spotify",
-        f"> Atualizado em **{now}** &nbsp;—&nbsp; [{playlist_id}]({playlist_url})",
+        f"> Actualizado em **{now}** &nbsp;—&nbsp; [{playlist_id}]({playlist_url})",
         "",
         f"**{len(uris)}/{len(tracks)} tracks** adicionados com sucesso.",
         "",
