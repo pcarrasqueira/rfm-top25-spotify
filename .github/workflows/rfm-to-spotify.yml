@@ -1,4 +1,4 @@
-name: Radios PT -> Spotify | RFM Top 25
+name: RFM Top 25 -> Spotify
 
 run-name: "RFM Top 25 -> Spotify | ${{ github.event_name == 'workflow_dispatch' && 'manual' || 'agendado' }} @ ${{ github.run_started_at }}"
 

@@ -1,4 +1,4 @@
-name: Radios PT -> Spotify | Comercial Live
+name: Comercial Live -> Spotify
 
 run-name: "Comercial Live -> Spotify | ${{ github.event_name == 'workflow_dispatch' && 'manual' || 'agendado' }} @ ${{ github.run_started_at }}"
 

@@ -1,4 +1,4 @@
-name: Radios PT -> Spotify | Comercial TNT Top 20
+name: Comercial TNT Top 20 -> Spotify
 
 run-name: "Comercial TNT Top 20 -> Spotify | ${{ github.event_name == 'workflow_dispatch' && 'manual' || 'agendado' }} @ ${{ github.run_started_at }}"
 
