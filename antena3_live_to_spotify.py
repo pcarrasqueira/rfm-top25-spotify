@@ -8,7 +8,7 @@ Entradas cujo titulo OU artista coincida com um programa da grelha EPG da Antena
 automaticamente ignoradas (ex: "Manhãs da 3", "Logo Se Vê", "Portugália", etc.)
 
 Estrutura de cada <li> na pagina: [HH:MM, Titulo, Artista]
-O campo de hora e detectado dinamicamente (TIME_RE) por seguranca.
+O selector aponta so a lista de musicas (ul apos h1 'Ja tocou').
 """
 
 import os
@@ -28,6 +28,7 @@ EPG_URL                = "https://www.rtp.pt/EPG/json/rtp-channels-page/list-gri
 PLAYLIST_LIMIT         = 300
 WINDOW_HOURS           = 3
 TIME_RE                = re.compile(r"^\d{1,2}:\d{2}$")
+DEBUG                  = os.environ.get("A3_DEBUG", "").lower() in ("1", "true", "yes")
 
 
 def write_summary(lines: list[str]) -> None:
@@ -45,16 +46,10 @@ def normalize(text: str) -> str:
 
 
 def get_epg_program_names(lisbon_date: datetime.date) -> set[str]:
-    """
-    Busca a grelha EPG da Antena 3 para o dia dado e devolve
-    um set com os nomes normalizados de todos os programas (principais e sub-programas).
-    Em caso de erro retorna set vazio (fail-safe: nao filtrar nada).
-    """
     date_str = lisbon_date.strftime("%d-%m-%Y")
     url      = EPG_URL.format(date=date_str)
     try:
-        resp = requests.get(url, timeout=15,
-                            headers={"User-Agent": "Mozilla/5.0"})
+        resp = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
         resp.raise_for_status()
         data = resp.json()
     except Exception as exc:
@@ -99,10 +94,10 @@ def spotify(method: str, url: str, token: str, **kwargs) -> requests.Response:
 
 
 def fetch_tracks() -> list[dict]:
-    headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"}
+    headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"}
 
     utc_now       = datetime.datetime.now(datetime.UTC)
-    lisbon_offset = 2 if 3 < utc_now.month < 11 else 1
+    lisbon_offset = 1 if 3 < utc_now.month < 11 else 0  # WEST=UTC+1 verao, WET=UTC+0 inverno
     lisbon_now    = (utc_now + datetime.timedelta(hours=lisbon_offset)).replace(tzinfo=None)
     cutoff        = lisbon_now - datetime.timedelta(hours=WINDOW_HOURS)
     print(f"  Janela: {cutoff.strftime('%H:%M')} - {lisbon_now.strftime('%H:%M')} Lisboa")
@@ -112,39 +107,63 @@ def fetch_tracks() -> list[dict]:
     resp = requests.get(ANTENA3_URL, headers=headers, timeout=20)
     resp.raise_for_status()
 
-    soup        = BeautifulSoup(resp.text, "lxml")
+    soup = BeautifulSoup(resp.text, "lxml")
+
+    # Encontrar o <ul> especifico da lista 'Ja tocou' (logo apos o <h1>)
+    song_list = None
+    for h1 in soup.find_all("h1"):
+        if "tocou" in h1.get_text(strip=True).lower():
+            song_list = h1.find_next_sibling("ul")
+            break
+
+    if not song_list:
+        # Fallback: primeiro <ul> com pelo menos um <li> que contenha um HH:MM
+        print("  [WARN] Nao encontrei <h1>Ja tocou</h1> - a usar fallback")
+        for ul in soup.find_all("ul"):
+            lis = ul.find_all("li", recursive=False)
+            if any(TIME_RE.search(li.get_text()) for li in lis):
+                song_list = ul
+                break
+
+    if not song_list:
+        print("  [ERROR] Lista de musicas nao encontrada na pagina")
+        return []
+
     seen        = set()
     tracks      = []
     skipped_epg = 0
+    total_li    = 0
 
-    for li in soup.select("ul li"):
-        parts = [t.strip() for t in li.stripped_strings]
+    for li in song_list.find_all("li", recursive=False):
+        parts    = [t.strip() for t in li.stripped_strings]
+        total_li += 1
 
-        # Detectar o indice do campo de hora (HH:MM) -- normalmente em parts[0]
+        # Campo de hora (HH:MM) normalmente em parts[0]
         time_idx = next((i for i, p in enumerate(parts) if TIME_RE.match(p)), None)
         if time_idx is None:
+            if DEBUG:
+                print(f"  [DBG] sem hora: {parts}")
             continue
 
         time_str  = parts[time_idx]
         remaining = [p for i, p in enumerate(parts) if i != time_idx]
-        if len(remaining) < 1:
+        if not remaining:
             continue
 
-        # Estrutura da pagina: [HH:MM, Titulo, Artista]
-        # Apos remover a hora: remaining[0]=titulo, remaining[1]=artista (opcional)
+        # Estrutura: [HH:MM, Titulo, Artista]
         title  = remaining[0]
         artist = remaining[1] if len(remaining) > 1 else ""
 
-        # Ignorar entradas sem titulo valido ou com titulo igual a hora (ruido)
-        if not title or TIME_RE.match(title):
-            continue
+        if DEBUG:
+            print(f"  [DBG] {time_str} | titulo={title!r} | artista={artist!r}")
 
-        # Filtrar programas da grelha EPG (verificar title e artist)
         if epg_programs and (
             normalize(title)  in epg_programs or
-            normalize(artist) in epg_programs
+            (artist and normalize(artist) in epg_programs)
         ):
             skipped_epg += 1
+            if DEBUG:
+                print(f"  [DBG] EPG filtrado: {title!r} / {artist!r}")
             continue
 
         try:
@@ -157,6 +176,8 @@ def fetch_tracks() -> list[dict]:
             continue
 
         if rec_dt < cutoff:
+            if DEBUG:
+                print(f"  [DBG] fora janela ({rec_dt.strftime('%H:%M')} < {cutoff.strftime('%H:%M')}): {title!r}")
             continue
 
         key = (title.upper(), artist.upper())
@@ -164,6 +185,8 @@ def fetch_tracks() -> list[dict]:
             seen.add(key)
             tracks.append({"artist": artist, "title": title})
 
+    if DEBUG:
+        print(f"  [DBG] total <li> processados: {total_li}")
     if skipped_epg:
         print(f"  {skipped_epg} entradas ignoradas (programas EPG)")
     print(f"  {len(tracks)} tracks unicos nas ultimas {WINDOW_HOURS}h")
@@ -171,8 +194,9 @@ def fetch_tracks() -> list[dict]:
 
 
 def search_track(token: str, artist: str, title: str) -> str | None:
-    queries = [f'track:"{title}" artist:"{artist}"', f"{artist} {title}"]
-    if not artist:
+    if artist:
+        queries = [f'track:"{title}" artist:"{artist}"', f"{artist} {title}"]
+    else:
         queries = [f'track:"{title}"', title]
     for query in queries:
         resp  = spotify("GET", SPOTIFY_SEARCH_URL, token,
