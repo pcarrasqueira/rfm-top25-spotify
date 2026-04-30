@@ -4,7 +4,7 @@ run-name: "Batida FM Live -> Spotify | ${{ github.event_name == 'workflow_dispat
 
 on:
   schedule:
-    - cron: '0 * * * *'  # hora a hora
+    - cron: '12 * * * *'  # hora a hora, ao minuto :12
   workflow_dispatch:
 
 jobs:

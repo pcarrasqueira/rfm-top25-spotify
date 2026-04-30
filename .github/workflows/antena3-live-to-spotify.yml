@@ -4,7 +4,7 @@ run-name: "Antena 3 Live -> Spotify | ${{ github.event_name == 'workflow_dispatc
 
 on:
   schedule:
-    - cron: '0 * * * *'  # hora a hora
+    - cron: '48 * * * *'  # hora a hora, ao minuto :48
   workflow_dispatch:
 
 jobs:

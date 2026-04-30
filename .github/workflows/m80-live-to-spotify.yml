@@ -4,7 +4,7 @@ run-name: "M80 Live -> Spotify | ${{ github.event_name == 'workflow_dispatch' &&
 
 on:
   schedule:
-    - cron: '0 * * * *'  # hora a hora
+    - cron: '36 * * * *'  # hora a hora, ao minuto :36
   workflow_dispatch:
 
 jobs:
