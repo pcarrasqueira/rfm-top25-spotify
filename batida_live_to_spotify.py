@@ -197,7 +197,7 @@ def main() -> None:
                 new_uris.append(uri)
                 print(f"  \u2713 {t['artist']} - {t['title']}")
     except RateLimitError as e:
-        msg = f"\u23f3 Rate limit atingido — Spotify pede para aguardar **{e.retry_after}s** antes de tentar de novo."
+        msg = f"\u23f3 Rate limit atingido \u2014 Spotify pede para aguardar **{e.retry_after}s** antes de tentar de novo."
         print(f"\n  {msg}")
         write_summary(["## Batida FM Live -> Spotify", "", f"> \u26a0\ufe0f {msg}"])
         sys.exit(1)
@@ -222,19 +222,30 @@ def main() -> None:
     now          = datetime.datetime.now(datetime.UTC).strftime("%d/%m/%Y %H:%M UTC")
     playlist_url = f"https://open.spotify.com/playlist/{playlist_id}"
 
-    status_label = {"added": "\u2705 adicionado", "skipped": "\u23ed\ufe0f ja existe", "not_found": "\u274c nao encontrado"}
     summary = [
         "## Batida FM Live -> Spotify",
         f"> Actualizado em **{now}** &nbsp;\u2014&nbsp; [Abrir playlist]({playlist_url})",
         "",
         f"**{len(added)}/{len(raw_tracks)} tracks** adicionados &nbsp;|&nbsp; {len(skipped)} ja existentes &nbsp;|&nbsp; {len(not_found)} nao encontrados",
         "",
-        "| Artista | Musica | Estado |",
-        "|---|---|---|",
+        "### \U0001f3b5 Recolhidos da radio",
+        "| Artista | M\u00fasica |",
+        "|---|---|",
     ]
-    for r in results:
-        t = r["track"]
-        summary.append(f"| {t['artist']} | {t['title']} | {status_label[r['status']]} |")
+    for t in raw_tracks:
+        summary.append(f"| {t['artist']} | {t['title']} |")
+
+    if added:
+        summary += ["", "### \u2705 Adicionados ao Spotify", "| Artista | M\u00fasica |", "|---|---|"]
+        for r in added:
+            t = r["track"]
+            summary.append(f"| {t['artist']} | {t['title']} |")
+
+    if not_found:
+        summary += ["", "### \u274c N\u00e3o encontrados no Spotify", "| Artista | M\u00fasica |", "|---|---|"]
+        for r in not_found:
+            t = r["track"]
+            summary.append(f"| {t['artist']} | {t['title']} |")
 
     if removed_count:
         summary += ["", f"_{removed_count} tracks antigos removidos para manter limite de {PLAYLIST_LIMIT}._"]

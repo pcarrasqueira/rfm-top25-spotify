@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Recolhe as musicas tocadas na M80 nas ultimas 3h via API JSON:
+Recolhe as musicas tocadas na M80 na ultima 1h via API JSON:
   https://m80.pt/now_playing_logs/json/m80_YYYY-MM-DD.json
 """
 
@@ -15,7 +15,7 @@ SPOTIFY_SEARCH_URL     = "https://api.spotify.com/v1/search"
 SPOTIFY_PLAYLIST_ITEMS = "https://api.spotify.com/v1/playlists/{id}/items"
 M80_LOG_URL            = "https://m80.pt/now_playing_logs/json/m80_{date}.json"
 PLAYLIST_LIMIT         = 300
-WINDOW_HOURS           = 3
+WINDOW_HOURS           = 1
 
 
 class RateLimitError(Exception):
@@ -93,7 +93,7 @@ def fetch_tracks() -> list[dict]:
         if key not in seen:
             seen.add(key)
             tracks.append({"artist": artist, "title": title})
-    print(f"  {len(tracks)} tracks unicos nas ultimas {WINDOW_HOURS}h")
+    print(f"  {len(tracks)} tracks unicos na ultima {WINDOW_HOURS}h")
     return tracks
 
 
@@ -156,7 +156,7 @@ def main() -> None:
     raw_tracks = fetch_tracks()
     if not raw_tracks:
         print("Nenhum track encontrado na janela de tempo, a sair.")
-        write_summary(["## M80 Live -> Spotify", "", "Sem tracks novos nas ultimas 3h."])
+        write_summary(["## M80 Live -> Spotify", "", "Sem tracks novos na ultima 1h."])
         sys.exit(0)
 
     print("\nA autenticar no Spotify...")
@@ -210,19 +210,30 @@ def main() -> None:
     now          = datetime.datetime.now(datetime.UTC).strftime("%d/%m/%Y %H:%M UTC")
     playlist_url = f"https://open.spotify.com/playlist/{playlist_id}"
 
-    status_label = {"added": "\u2705 adicionado", "skipped": "\u23ed\ufe0f ja existe", "not_found": "\u274c nao encontrado"}
     summary = [
         "## M80 Live -> Spotify",
         f"> Actualizado em **{now}** &nbsp;\u2014&nbsp; [Abrir playlist]({playlist_url})",
         "",
         f"**{len(added)}/{len(raw_tracks)} tracks** adicionados &nbsp;|&nbsp; {len(skipped)} ja existentes &nbsp;|&nbsp; {len(not_found)} nao encontrados",
         "",
-        "| Artista | Musica | Estado |",
-        "|---|---|---|",
+        "### \U0001f3b5 Recolhidos da radio",
+        "| Artista | M\u00fasica |",
+        "|---|---|",
     ]
-    for r in results:
-        t = r["track"]
-        summary.append(f"| {t['artist']} | {t['title']} | {status_label[r['status']]} |")
+    for t in raw_tracks:
+        summary.append(f"| {t['artist']} | {t['title']} |")
+
+    if added:
+        summary += ["", "### \u2705 Adicionados ao Spotify", "| Artista | M\u00fasica |", "|---|---|"]
+        for r in added:
+            t = r["track"]
+            summary.append(f"| {t['artist']} | {t['title']} |")
+
+    if not_found:
+        summary += ["", "### \u274c N\u00e3o encontrados no Spotify", "| Artista | M\u00fasica |", "|---|---|"]
+        for r in not_found:
+            t = r["track"]
+            summary.append(f"| {t['artist']} | {t['title']} |")
 
     if removed_count:
         summary += ["", f"_{removed_count} tracks antigos removidos para manter limite de {PLAYLIST_LIMIT}._"]

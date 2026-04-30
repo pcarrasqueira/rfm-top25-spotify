@@ -27,7 +27,7 @@ SPOTIFY_PLAYLIST_ITEMS = "https://api.spotify.com/v1/playlists/{id}/items"
 ANTENA3_URL            = "https://antena3.rtp.pt/ja-tocou/"
 EPG_URL                = "https://www.rtp.pt/EPG/json/rtp-channels-page/list-grid/radio/3/{date}"
 PLAYLIST_LIMIT         = 300
-WINDOW_HOURS           = 3
+WINDOW_HOURS           = 1
 TIME_RE                = re.compile(r"^\d{1,2}:\d{2}$")
 TIME_RE_IN             = re.compile(r"\d{1,2}:\d{2}")
 DEBUG                  = os.environ.get("A3_DEBUG", "").lower() in ("1", "true", "yes")
@@ -180,7 +180,7 @@ def fetch_tracks() -> list[dict]:
 
     if skipped_epg:
         print(f"  {skipped_epg} entradas ignoradas (programas EPG)")
-    print(f"  {len(tracks)} tracks unicos nas ultimas {WINDOW_HOURS}h")
+    print(f"  {len(tracks)} tracks unicos na ultima {WINDOW_HOURS}h")
     return tracks
 
 
@@ -247,7 +247,7 @@ def main() -> None:
     raw_tracks = fetch_tracks()
     if not raw_tracks:
         print("Nenhum track encontrado na janela de tempo, a sair.")
-        write_summary(["## Antena 3 Live -> Spotify", "", "Sem tracks novos nas ultimas 3h."])
+        write_summary(["## Antena 3 Live -> Spotify", "", "Sem tracks novos na ultima 1h."])
         sys.exit(0)
 
     print("\nA autenticar no Spotify...")
@@ -290,7 +290,7 @@ def main() -> None:
     current_uris, removed_count = trim_playlist(token, playlist_id, current_uris, slots_needed)
 
     if new_uris:
-        space    = PLAYLIST_LIMIT - len(new_uris)
+        space    = PLAYLIST_LIMIT - len(current_uris)
         new_uris = new_uris[:space]
         print(f"  A adicionar {len(new_uris)} tracks...")
         add_items(token, playlist_id, new_uris)
@@ -301,19 +301,30 @@ def main() -> None:
     now          = datetime.datetime.now(datetime.UTC).strftime("%d/%m/%Y %H:%M UTC")
     playlist_url = f"https://open.spotify.com/playlist/{playlist_id}"
 
-    status_label = {"added": "\u2705 adicionado", "skipped": "\u23ed\ufe0f ja existe", "not_found": "\u274c nao encontrado"}
     summary = [
         "## Antena 3 Live -> Spotify",
         f"> Actualizado em **{now}** &nbsp;\u2014&nbsp; [Abrir playlist]({playlist_url})",
         "",
         f"**{len(added)}/{len(raw_tracks)} tracks** adicionados &nbsp;|&nbsp; {len(skipped)} ja existentes &nbsp;|&nbsp; {len(not_found)} nao encontrados",
         "",
-        "| Artista | Musica | Estado |",
-        "|---|---|---|",
+        "### \U0001f3b5 Recolhidos da radio",
+        "| Artista | M\u00fasica |",
+        "|---|---|",
     ]
-    for r in results:
-        t = r["track"]
-        summary.append(f"| {t['artist']} | {t['title']} | {status_label[r['status']]} |")
+    for t in raw_tracks:
+        summary.append(f"| {t['artist']} | {t['title']} |")
+
+    if added:
+        summary += ["", "### \u2705 Adicionados ao Spotify", "| Artista | M\u00fasica |", "|---|---|"]
+        for r in added:
+            t = r["track"]
+            summary.append(f"| {t['artist']} | {t['title']} |")
+
+    if not_found:
+        summary += ["", "### \u274c N\u00e3o encontrados no Spotify", "| Artista | M\u00fasica |", "|---|---|"]
+        for r in not_found:
+            t = r["track"]
+            summary.append(f"| {t['artist']} | {t['title']} |")
 
     if removed_count:
         summary += ["", f"_{removed_count} tracks antigos removidos para manter limite de {PLAYLIST_LIMIT}._"]
