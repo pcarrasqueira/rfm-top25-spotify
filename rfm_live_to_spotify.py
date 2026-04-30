@@ -48,14 +48,18 @@ def get_access_token() -> str:
 
 def spotify(method: str, url: str, token: str, **kwargs) -> requests.Response:
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    resp = requests.request(method, url, headers=headers, timeout=15, **kwargs)
-    if resp.status_code == 429:
-        retry_after = int(resp.headers.get("Retry-After", 30))
-        raise RateLimitError(retry_after)
-    if not resp.ok:
-        print(f"  HTTP {resp.status_code} {method} {url}: {resp.text[:300]}")
-        resp.raise_for_status()
-    return resp
+    for attempt in range(5):
+        resp = requests.request(method, url, headers=headers, timeout=15, **kwargs)
+        if resp.status_code == 429:
+            retry_after = int(resp.headers.get("Retry-After", 2 ** attempt))
+            print(f"  HTTP 429 {method} {url}: Too many requests, aguardar {retry_after}s")
+            time.sleep(retry_after)
+            continue
+        if not resp.ok:
+            print(f"  HTTP {resp.status_code} {method} {url}: {resp.text[:300]}")
+            resp.raise_for_status()
+        return resp
+    raise RateLimitError(60)
 
 
 def scrape_current() -> list[dict]:
@@ -84,13 +88,18 @@ def scrape_current() -> list[dict]:
     return tracks
 
 
-def search_track(token: str, artist: str, title: str) -> str | None:
+def search_track(token: str, artist: str, title: str) -> dict | None:
     for query in [f"track:{title} artist:{artist}", f"{artist} {title}"]:
         resp  = spotify("GET", SPOTIFY_SEARCH_URL, token,
                         params={"q": query, "type": "track", "limit": 10, "market": "PT"})
         items = resp.json().get("tracks", {}).get("items", [])
         if items:
-            return items[0]["uri"]
+            item = items[0]
+            return {
+                "uri": item["uri"],
+                "spotify_artist": item["artists"][0]["name"] if item.get("artists") else artist,
+                "spotify_title": item["name"],
+            }
         time.sleep(0.3)
     return None
 
@@ -166,16 +175,16 @@ def main() -> None:
     new_uris = []
     try:
         for t in raw_tracks:
-            uri = search_track(token, t["artist"], t["title"])
-            if not uri:
+            match = search_track(token, t["artist"], t["title"])
+            if not match:
                 results.append({"track": t, "status": "not_found"})
                 print(f"  \u2717 {t['artist']} - {t['title']}")
-            elif uri in current_set:
-                results.append({"track": t, "status": "skipped"})
+            elif match["uri"] in current_set:
+                results.append({"track": t, "status": "skipped", "match": match})
                 print(f"  ~ {t['artist']} - {t['title']} (ja existe)")
             else:
-                results.append({"track": t, "status": "added", "uri": uri})
-                new_uris.append(uri)
+                results.append({"track": t, "status": "added", "match": match})
+                new_uris.append(match["uri"])
                 print(f"  \u2713 {t['artist']} - {t['title']}")
     except RateLimitError as e:
         msg = f"\u23f3 Rate limit atingido \u2014 Spotify pede para aguardar **{e.retry_after}s** antes de tentar de novo."
@@ -212,24 +221,21 @@ def main() -> None:
         "",
         f"**{len(added)}/{len(raw_tracks)} tracks** adicionados &nbsp;|&nbsp; {len(skipped)} ja existentes &nbsp;|&nbsp; {len(not_found)} nao encontrados",
         "",
-        "### \U0001f3b5 Recolhidos da radio",
-        "| Artista | M\u00fasica |",
-        "|---|---|",
+        "| Artista (r\u00e1dio) | M\u00fasica (r\u00e1dio) | Artista (Spotify) | M\u00fasica (Spotify) | Estado |",
+        "|---|---|---|---|---|",
     ]
-    for t in raw_tracks:
-        summary.append(f"| {t['artist']} | {t['title']} |")
-
-    if added:
-        summary += ["", "### \u2705 Adicionados ao Spotify", "| Artista | M\u00fasica |", "|---|---|"]
-        for r in added:
-            t = r["track"]
-            summary.append(f"| {t['artist']} | {t['title']} |")
-
-    if not_found:
-        summary += ["", "### \u274c N\u00e3o encontrados no Spotify", "| Artista | M\u00fasica |", "|---|---|"]
-        for r in not_found:
-            t = r["track"]
-            summary.append(f"| {t['artist']} | {t['title']} |")
+    for r in results:
+        t  = r["track"]
+        m  = r.get("match") or {}
+        sp_artist = m.get("spotify_artist", "")
+        sp_title  = m.get("spotify_title", "")
+        if r["status"] == "added":
+            estado = "\u2705 adicionado"
+        elif r["status"] == "skipped":
+            estado = "\u23ed\ufe0f j\u00e1 existe"
+        else:
+            estado = "\u274c n\u00e3o encontrado"
+        summary.append(f"| {t['artist']} | {t['title']} | {sp_artist} | {sp_title} | {estado} |")
 
     if removed_count:
         summary += ["", f"_{removed_count} tracks antigos removidos para manter limite de {PLAYLIST_LIMIT}._"]

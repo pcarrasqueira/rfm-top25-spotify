@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
 """
-Scrapa o TNT Top 20 da Rádio Comercial em https://radiocomercial.pt/programas/tnt-todos-no-top
+Scrapa o TNT Top 20 da Radio Comercial em https://radiocomercial.pt/programas/tnt-todos-no-top
 e actualiza a playlist Spotify indicada.
 
 Estrutura HTML confirmada (Abril 2026):
   <div class="inside">
     <div class="songNumber">
-      <div>1</div>          <- posição
+      <div>1</div>          <- posicao
       <div class="weeknumbers">...</div>
     </div>
-    <div class="songTitle">Die On This Hill</div>   <- título
+    <div class="songTitle">Die On This Hill</div>   <- titulo
     <div class="songArtist">Sienna Spiro</div>      <- artista
     ...
   </div>
 
 Nota API Spotify:
   - PUT /playlists/{id}/items com {"uris": [...]} substitui todos os items (max 100)
-  - GET /search limit máximo 10
+  - GET /search limit maximo 10
 """
 
 import os
@@ -73,9 +73,6 @@ def get_access_token() -> str:
 
 
 def scrape_comercial_tnt() -> list[dict]:
-    """
-    Raspa o TNT Top 20 da Rádio Comercial.
-    """
     headers = {
         "User-Agent": "Mozilla/5.0 (compatible; comercial-tnt-spotify-bot/2.0)",
         "Accept-Language": "pt-PT,pt;q=0.9",
@@ -135,7 +132,7 @@ def scrape_comercial_tnt() -> list[dict]:
     return sorted(tracks, key=lambda x: x["position"])
 
 
-def search_spotify(token: str, artist: str, title: str) -> str | None:
+def search_spotify(token: str, artist: str, title: str) -> dict | None:
     queries = [
         f'track:"{title}" artist:"{artist}"',
         f'{title} {artist}',
@@ -146,7 +143,12 @@ def search_spotify(token: str, artist: str, title: str) -> str | None:
         resp  = spotify_request("GET", SPOTIFY_SEARCH_URL, token, params=params)
         items = resp.json().get("tracks", {}).get("items", [])
         if items:
-            return items[0]["uri"]
+            item = items[0]
+            return {
+                "uri": item["uri"],
+                "spotify_artist": item["artists"][0]["name"] if item.get("artists") else artist,
+                "spotify_title": item["name"],
+            }
     return None
 
 
@@ -164,12 +166,12 @@ def update_playlist_description(token: str, playlist_id: str, description: str) 
 
 
 def main() -> None:
-    print("=== Rádio Comercial TNT Top 20 -> Spotify ===")
+    print("=== Radio Comercial TNT Top 20 -> Spotify ===")
 
     print("\n[1/3] A raspar radiocomercial.pt...")
     tracks = scrape_comercial_tnt()
     if not tracks:
-        print("ERRO: Nenhum track encontrado. Verificar estrutura da página.")
+        print("ERRO: Nenhum track encontrado. Verificar estrutura da pagina.")
         sys.exit(1)
     print(f"  {len(tracks)} tracks encontrados:")
     for t in tracks:
@@ -180,15 +182,17 @@ def main() -> None:
     me    = spotify_request("GET", SPOTIFY_ME_URL, token).json()
     print(f"  Conta: {me.get('display_name')} ({me.get('id')})")
 
-    uris, not_found = [], []
+    results = []
+    uris    = []
     for t in tracks:
-        uri = search_spotify(token, t["artist"], t["title"])
-        status = "ok" if uri else "nao encontrado"
-        print(f"  [{status}] {t['position']:2d}. {t['artist']} - {t['title']}")
-        if uri:
-            uris.append(uri)
+        match = search_spotify(token, t["artist"], t["title"])
+        if match:
+            results.append({"track": t, "status": "added", "match": match})
+            uris.append(match["uri"])
+            print(f"  \u2713 {t['position']:2d}. {t['artist']} - {t['title']}")
         else:
-            not_found.append(t)
+            results.append({"track": t, "status": "not_found"})
+            print(f"  \u2717 {t['position']:2d}. {t['artist']} - {t['title']} (nao encontrado)")
         time.sleep(0.1)
     print(f"\n  Encontradas: {len(uris)}/{len(tracks)}")
 
@@ -204,23 +208,30 @@ def main() -> None:
     lisbon_str = datetime.datetime.now(ZoneInfo("Europe/Lisbon")).strftime("%d/%m/%Y %H:%M")
     update_playlist_description(token, playlist_id, f"Actualizado a {lisbon_str}")
 
-    now = datetime.datetime.now(ZoneInfo("Europe/Lisbon")).strftime("%d/%m/%Y %H:%M")
+    now          = datetime.datetime.now(ZoneInfo("Europe/Lisbon")).strftime("%d/%m/%Y %H:%M")
     playlist_url = f"https://open.spotify.com/playlist/{playlist_id}"
+    not_found    = [r for r in results if r["status"] == "not_found"]
+
     summary = [
-        "## Rádio Comercial TNT Top 20 -> Spotify",
-        f"> Actualizado em **{now}** &nbsp;—&nbsp; [{playlist_id}]({playlist_url})",
+        "## Radio Comercial TNT Top 20 -> Spotify",
+        f"> Actualizado em **{now}** &nbsp;\u2014&nbsp; [Abrir playlist]({playlist_url})",
         "",
         f"**{len(uris)}/{len(tracks)} tracks** adicionados com sucesso.",
         "",
-        "| # | Artista | Música | Estado |",
-        "|---|---|---|---|",
+        "| # | Artista (r\u00e1dio) | M\u00fasica (r\u00e1dio) | Artista (Spotify) | M\u00fasica (Spotify) | Estado |",
+        "|---|---|---|---|---|---|",
     ]
-    for t in tracks:
-        found = not any(nf["position"] == t["position"] for nf in not_found)
-        estado = "OK" if found else "nao encontrado"
-        summary.append(f"| {t['position']} | {t['artist']} | {t['title']} | {estado} |")
+    for r in results:
+        t  = r["track"]
+        m  = r.get("match") or {}
+        sp_artist = m.get("spotify_artist", "")
+        sp_title  = m.get("spotify_title", "")
+        estado    = "\u2705 adicionado" if r["status"] == "added" else "\u274c n\u00e3o encontrado"
+        summary.append(f"| {t['position']} | {t['artist']} | {t['title']} | {sp_artist} | {sp_title} | {estado} |")
+
     if not_found:
-        summary += ["", f"Atencao: {len(not_found)} track(s) nao encontrados no Spotify."]
+        summary += ["", f"\u26a0\ufe0f {len(not_found)} track(s) nao encontrados no Spotify."]
+
     write_summary(summary)
 
 
