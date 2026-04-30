@@ -3,6 +3,8 @@ name: M80 Live -> Spotify
 run-name: "M80 Live -> Spotify | ${{ github.event_name == 'workflow_dispatch' && 'manual' || 'agendado' }} @ ${{ github.run_started_at }}"
 
 on:
+  schedule:
+    - cron: '36 * * * *'  # hora a hora, ao minuto :36
   workflow_dispatch:
 
 jobs:
