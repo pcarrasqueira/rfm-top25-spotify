@@ -118,6 +118,7 @@ def search_track(token: str, artist: str, title: str) -> dict | None:
     for query in [f'track:"{title}" artist:"{artist}"', f"{artist} {title}"]:
         resp  = spotify("GET", SPOTIFY_SEARCH_URL, token,
                         params={"q": query, "type": "track", "limit": 5, "market": "PT"})
+        time.sleep(0.3)  # sempre, não só nos misses
         items = resp.json().get("tracks", {}).get("items", [])
         if items:
             item = items[0]
@@ -126,7 +127,6 @@ def search_track(token: str, artist: str, title: str) -> dict | None:
                 "spotify_artist": item["artists"][0]["name"] if item.get("artists") else artist,
                 "spotify_title": item["name"],
             }
-        time.sleep(0.3)
     return None
 
 
