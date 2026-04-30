@@ -28,9 +28,15 @@ ANTENA3_URL            = "https://antena3.rtp.pt/ja-tocou/"
 EPG_URL                = "https://www.rtp.pt/EPG/json/rtp-channels-page/list-grid/radio/3/{date}"
 PLAYLIST_LIMIT         = 300
 WINDOW_HOURS           = 3
-TIME_RE                = re.compile(r"^\d{1,2}:\d{2}$")   # para tokens individuais
-TIME_RE_IN             = re.compile(r"\d{1,2}:\d{2}")      # para pesquisa em texto concatenado
+TIME_RE                = re.compile(r"^\d{1,2}:\d{2}$")
+TIME_RE_IN             = re.compile(r"\d{1,2}:\d{2}")
 DEBUG                  = os.environ.get("A3_DEBUG", "").lower() in ("1", "true", "yes")
+
+
+class RateLimitError(Exception):
+    def __init__(self, retry_after: int):
+        super().__init__(f"Spotify rate limit: aguardar {retry_after}s")
+        self.retry_after = retry_after
 
 
 def write_summary(lines: list[str]) -> None:
@@ -88,6 +94,9 @@ def get_access_token() -> str:
 def spotify(method: str, url: str, token: str, **kwargs) -> requests.Response:
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     resp = requests.request(method, url, headers=headers, timeout=15, **kwargs)
+    if resp.status_code == 429:
+        retry_after = int(resp.headers.get("Retry-After", 30))
+        raise RateLimitError(retry_after)
     if not resp.ok:
         print(f"  HTTP {resp.status_code} {method} {url}: {resp.text[:300]}")
         resp.raise_for_status()
@@ -95,11 +104,9 @@ def spotify(method: str, url: str, token: str, **kwargs) -> requests.Response:
 
 
 def get_song_ul(soup: BeautifulSoup):
-    """Encontra o <ul> principal da lista de musicas (50+ items directos que contenham HH:MM)."""
     for ul in soup.find_all("ul"):
         lis = ul.find_all("li", recursive=False)
         if len(lis) > 50:
-            # get_text() concatena tudo sem separadores, usar TIME_RE_IN (sem anchors)
             sample = [li.get_text(strip=True) for li in lis[:5]]
             if any(TIME_RE_IN.search(t) for t in sample):
                 return ul
@@ -110,7 +117,7 @@ def fetch_tracks() -> list[dict]:
     headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"}
 
     utc_now       = datetime.datetime.now(datetime.UTC)
-    lisbon_offset = 1 if 3 < utc_now.month < 11 else 0  # WEST=UTC+1 verao, WET=UTC+0 inverno
+    lisbon_offset = 1 if 3 < utc_now.month < 11 else 0
     lisbon_now    = (utc_now + datetime.timedelta(hours=lisbon_offset)).replace(tzinfo=None)
     cutoff        = lisbon_now - datetime.timedelta(hours=WINDOW_HOURS)
     print(f"  Janela: {cutoff.strftime('%H:%M')} - {lisbon_now.strftime('%H:%M')} Lisboa")
@@ -134,7 +141,6 @@ def fetch_tracks() -> list[dict]:
     for li in song_list.find_all("li", recursive=False):
         parts = [t.strip() for t in li.stripped_strings]
 
-        # Cada <li> tem a hora duplicada: ['HH:MM', 'HH:MM', 'Titulo', 'Artista']
         time_tokens    = [p for p in parts if TIME_RE.match(p)]
         content_tokens = [p for p in parts if not TIME_RE.match(p)]
 
@@ -189,7 +195,7 @@ def search_track(token: str, artist: str, title: str) -> str | None:
         items = resp.json().get("tracks", {}).get("items", [])
         if items:
             return items[0]["uri"]
-        time.sleep(0.05)
+        time.sleep(0.2)
     return None
 
 
@@ -256,18 +262,24 @@ def main() -> None:
     print(f"\nA pesquisar {len(raw_tracks)} tracks no Spotify...")
     results  = []
     new_uris = []
-    for t in raw_tracks:
-        uri = search_track(token, t["artist"], t["title"])
-        if not uri:
-            results.append({"track": t, "status": "not_found"})
-            print(f"  \u2717 {t['artist']} - {t['title']}")
-        elif uri in current_set:
-            results.append({"track": t, "status": "skipped"})
-            print(f"  ~ {t['artist']} - {t['title']} (ja existe)")
-        else:
-            results.append({"track": t, "status": "added", "uri": uri})
-            new_uris.append(uri)
-            print(f"  \u2713 {t['artist']} - {t['title']}")
+    try:
+        for t in raw_tracks:
+            uri = search_track(token, t["artist"], t["title"])
+            if not uri:
+                results.append({"track": t, "status": "not_found"})
+                print(f"  \u2717 {t['artist']} - {t['title']}")
+            elif uri in current_set:
+                results.append({"track": t, "status": "skipped"})
+                print(f"  ~ {t['artist']} - {t['title']} (ja existe)")
+            else:
+                results.append({"track": t, "status": "added", "uri": uri})
+                new_uris.append(uri)
+                print(f"  \u2713 {t['artist']} - {t['title']}")
+    except RateLimitError as e:
+        msg = f"\u23f3 Rate limit atingido \u2014 Spotify pede para aguardar **{e.retry_after}s** antes de tentar de novo."
+        print(f"\n  {msg}")
+        write_summary(["## Antena 3 Live -> Spotify", "", f"> \u26a0\ufe0f {msg}"])
+        sys.exit(1)
 
     added     = [r for r in results if r["status"] == "added"]
     skipped   = [r for r in results if r["status"] == "skipped"]

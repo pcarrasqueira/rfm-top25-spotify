@@ -18,6 +18,12 @@ PLAYLIST_LIMIT         = 300
 WINDOW_HOURS           = 3
 
 
+class RateLimitError(Exception):
+    def __init__(self, retry_after: int):
+        super().__init__(f"Spotify rate limit: aguardar {retry_after}s")
+        self.retry_after = retry_after
+
+
 def write_summary(lines: list[str]) -> None:
     path = os.environ.get("GITHUB_STEP_SUMMARY")
     if not path:
@@ -40,6 +46,9 @@ def get_access_token() -> str:
 def spotify(method: str, url: str, token: str, **kwargs) -> requests.Response:
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     resp = requests.request(method, url, headers=headers, timeout=15, **kwargs)
+    if resp.status_code == 429:
+        retry_after = int(resp.headers.get("Retry-After", 30))
+        raise RateLimitError(retry_after)
     if not resp.ok:
         print(f"  HTTP {resp.status_code} {method} {url}: {resp.text[:300]}")
         resp.raise_for_status()
@@ -95,12 +104,11 @@ def search_track(token: str, artist: str, title: str) -> str | None:
         items = resp.json().get("tracks", {}).get("items", [])
         if items:
             return items[0]["uri"]
-        time.sleep(0.05)
+        time.sleep(0.2)
     return None
 
 
 def get_playlist_uris(token: str, playlist_id: str) -> list[str]:
-    """Le todos os URIs da playlist. A Spotify API usa o campo 'item' (nao 'track') desde 2024."""
     url    = SPOTIFY_PLAYLIST_ITEMS.format(id=playlist_id)
     uris   = []
     params = {"limit": 100}
@@ -163,18 +171,24 @@ def main() -> None:
     print(f"\nA pesquisar {len(raw_tracks)} tracks no Spotify...")
     results   = []
     new_uris  = []
-    for t in raw_tracks:
-        uri = search_track(token, t["artist"], t["title"])
-        if not uri:
-            results.append({"track": t, "status": "not_found"})
-            print(f"  \u2717 {t['artist']} - {t['title']}")
-        elif uri in current_set:
-            results.append({"track": t, "status": "skipped"})
-            print(f"  ~ {t['artist']} - {t['title']} (ja existe)")
-        else:
-            results.append({"track": t, "status": "added", "uri": uri})
-            new_uris.append(uri)
-            print(f"  \u2713 {t['artist']} - {t['title']}")
+    try:
+        for t in raw_tracks:
+            uri = search_track(token, t["artist"], t["title"])
+            if not uri:
+                results.append({"track": t, "status": "not_found"})
+                print(f"  \u2717 {t['artist']} - {t['title']}")
+            elif uri in current_set:
+                results.append({"track": t, "status": "skipped"})
+                print(f"  ~ {t['artist']} - {t['title']} (ja existe)")
+            else:
+                results.append({"track": t, "status": "added", "uri": uri})
+                new_uris.append(uri)
+                print(f"  \u2713 {t['artist']} - {t['title']}")
+    except RateLimitError as e:
+        msg = f"\u23f3 Rate limit atingido \u2014 Spotify pede para aguardar **{e.retry_after}s** antes de tentar de novo."
+        print(f"\n  {msg}")
+        write_summary(["## Radio Comercial Live -> Spotify", "", f"> \u26a0\ufe0f {msg}"])
+        sys.exit(1)
 
     added     = [r for r in results if r["status"] == "added"]
     skipped   = [r for r in results if r["status"] == "skipped"]
@@ -196,10 +210,10 @@ def main() -> None:
     now          = datetime.datetime.now(datetime.UTC).strftime("%d/%m/%Y %H:%M UTC")
     playlist_url = f"https://open.spotify.com/playlist/{playlist_id}"
 
-    status_label = {"added": "✅ adicionado", "skipped": "⏭️ ja existe", "not_found": "❌ nao encontrado"}
+    status_label = {"added": "\u2705 adicionado", "skipped": "\u23ed\ufe0f ja existe", "not_found": "\u274c nao encontrado"}
     summary = [
         "## Radio Comercial Live -> Spotify",
-        f"> Actualizado em **{now}** &nbsp;—&nbsp; [Abrir playlist]({playlist_url})",
+        f"> Actualizado em **{now}** &nbsp;\u2014&nbsp; [Abrir playlist]({playlist_url})",
         "",
         f"**{len(added)}/{len(raw_tracks)} tracks** adicionados &nbsp;|&nbsp; {len(skipped)} ja existentes &nbsp;|&nbsp; {len(not_found)} nao encontrados",
         "",

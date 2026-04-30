@@ -2,16 +2,6 @@
 """
 Recolhe as musicas tocadas na Batida FM na ultima 1h via API JSON:
   https://listenapi.planetradio.co.uk/api9.2/events/bfm/{datetime}/{count}
-
-Estrutura da resposta (array de eventos):
-  [
-    {
-      "nowPlayingTrack":  "Woman",
-      "nowPlayingArtist": "Little Simz",
-      "nowPlayingTime":   "2026-04-29 23:29:30",  <- hora de Lisboa (WEST)
-    },
-    ...
-  ]
 """
 
 import os
@@ -30,6 +20,12 @@ API_EVENT_COUNT        = 100
 PLAYLIST_LIMIT         = 300
 WINDOW_HOURS           = 1
 LISBON_TZ              = ZoneInfo("Europe/Lisbon")
+
+
+class RateLimitError(Exception):
+    def __init__(self, retry_after: int):
+        super().__init__(f"Spotify rate limit: aguardar {retry_after}s")
+        self.retry_after = retry_after
 
 
 def write_summary(lines: list[str]) -> None:
@@ -54,6 +50,9 @@ def get_access_token() -> str:
 def spotify(method: str, url: str, token: str, **kwargs) -> requests.Response:
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     resp = requests.request(method, url, headers=headers, timeout=15, **kwargs)
+    if resp.status_code == 429:
+        retry_after = int(resp.headers.get("Retry-After", 30))
+        raise RateLimitError(retry_after)
     if not resp.ok:
         print(f"  HTTP {resp.status_code} {method} {url}: {resp.text[:300]}")
         resp.raise_for_status()
@@ -117,7 +116,7 @@ def search_track(token: str, artist: str, title: str) -> str | None:
         items = resp.json().get("tracks", {}).get("items", [])
         if items:
             return items[0]["uri"]
-        time.sleep(0.05)
+        time.sleep(0.2)
     return None
 
 
@@ -184,18 +183,24 @@ def main() -> None:
     print(f"\nA pesquisar {len(raw_tracks)} tracks no Spotify...")
     results  = []
     new_uris = []
-    for t in raw_tracks:
-        uri = search_track(token, t["artist"], t["title"])
-        if not uri:
-            results.append({"track": t, "status": "not_found"})
-            print(f"  \u2717 {t['artist']} - {t['title']}")
-        elif uri in current_set:
-            results.append({"track": t, "status": "skipped"})
-            print(f"  ~ {t['artist']} - {t['title']} (ja existe)")
-        else:
-            results.append({"track": t, "status": "added", "uri": uri})
-            new_uris.append(uri)
-            print(f"  \u2713 {t['artist']} - {t['title']}")
+    try:
+        for t in raw_tracks:
+            uri = search_track(token, t["artist"], t["title"])
+            if not uri:
+                results.append({"track": t, "status": "not_found"})
+                print(f"  \u2717 {t['artist']} - {t['title']}")
+            elif uri in current_set:
+                results.append({"track": t, "status": "skipped"})
+                print(f"  ~ {t['artist']} - {t['title']} (ja existe)")
+            else:
+                results.append({"track": t, "status": "added", "uri": uri})
+                new_uris.append(uri)
+                print(f"  \u2713 {t['artist']} - {t['title']}")
+    except RateLimitError as e:
+        msg = f"\u23f3 Rate limit atingido — Spotify pede para aguardar **{e.retry_after}s** antes de tentar de novo."
+        print(f"\n  {msg}")
+        write_summary(["## Batida FM Live -> Spotify", "", f"> \u26a0\ufe0f {msg}"])
+        sys.exit(1)
 
     added     = [r for r in results if r["status"] == "added"]
     skipped   = [r for r in results if r["status"] == "skipped"]
