@@ -3,8 +3,6 @@ name: Antena 3 Live -> Spotify
 run-name: "Antena 3 Live -> Spotify | ${{ github.event_name == 'workflow_dispatch' && 'manual' || 'agendado' }} @ ${{ github.run_started_at }}"
 
 on:
-  schedule:
-    - cron: '48 * * * *'  # hora a hora, ao minuto :48
   workflow_dispatch:
 
 jobs:
