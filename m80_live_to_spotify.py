@@ -9,10 +9,12 @@ import sys
 import time
 import datetime
 import requests
+from zoneinfo import ZoneInfo
 
 SPOTIFY_TOKEN_URL      = "https://accounts.spotify.com/api/token"
 SPOTIFY_SEARCH_URL     = "https://api.spotify.com/v1/search"
 SPOTIFY_PLAYLIST_ITEMS = "https://api.spotify.com/v1/playlists/{id}/items"
+SPOTIFY_PLAYLIST_URL   = "https://api.spotify.com/v1/playlists/{id}"
 M80_LOG_URL            = "https://m80.pt/now_playing_logs/json/m80_{date}.json"
 PLAYLIST_LIMIT         = 300
 WINDOW_HOURS           = 1
@@ -104,7 +106,7 @@ def search_track(token: str, artist: str, title: str) -> str | None:
         items = resp.json().get("tracks", {}).get("items", [])
         if items:
             return items[0]["uri"]
-        time.sleep(0.2)
+        time.sleep(0.3)
     return None
 
 
@@ -147,6 +149,11 @@ def trim_playlist(token: str, playlist_id: str, current_uris: list[str], slots_n
         remove_items(token, playlist_id, to_remove)
         current_uris = current_uris[:-overflow]
     return current_uris, removed
+
+
+def update_playlist_description(token: str, playlist_id: str, description: str) -> None:
+    url = SPOTIFY_PLAYLIST_URL.format(id=playlist_id)
+    spotify("PUT", url, token, json={"description": description})
 
 
 def main() -> None:
@@ -206,6 +213,9 @@ def main() -> None:
         print("Playlist actualizada!")
     else:
         print("Nenhum track novo para adicionar.")
+
+    lisbon_str = datetime.datetime.now(ZoneInfo("Europe/Lisbon")).strftime("%d/%m/%Y %H:%M")
+    update_playlist_description(token, playlist_id, f"Actualizado a {lisbon_str}")
 
     now          = datetime.datetime.now(datetime.UTC).strftime("%d/%m/%Y %H:%M UTC")
     playlist_url = f"https://open.spotify.com/playlist/{playlist_id}"

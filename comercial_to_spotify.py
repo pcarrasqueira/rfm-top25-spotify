@@ -26,10 +26,12 @@ import time
 import datetime
 import requests
 from bs4 import BeautifulSoup
+from zoneinfo import ZoneInfo
 
 SPOTIFY_TOKEN_URL      = "https://accounts.spotify.com/api/token"
 SPOTIFY_SEARCH_URL     = "https://api.spotify.com/v1/search"
 SPOTIFY_PLAYLIST_ITEMS = "https://api.spotify.com/v1/playlists/{id}/items"
+SPOTIFY_PLAYLIST_URL   = "https://api.spotify.com/v1/playlists/{id}"
 SPOTIFY_ME_URL         = "https://api.spotify.com/v1/me"
 COMERCIAL_URL          = "https://radiocomercial.pt/programas/tnt-todos-no-top"
 
@@ -73,16 +75,6 @@ def get_access_token() -> str:
 def scrape_comercial_tnt() -> list[dict]:
     """
     Raspa o TNT Top 20 da Rádio Comercial.
-
-    Estrutura HTML real (confirmada Abril 2026):
-      <div class="inside">
-        <div class="songNumber"><div>N</div>...</div>
-        <div class="songTitle">Título</div>      (ou classe similar)
-        <div class="songArtist">Artista</div>    (ou classe similar)
-      </div>
-
-    Se as classes internas mudarem, o fallback extrai todos os textos do
-    div.inside e usa os primeiros dois campos não-numéricos como título/artista.
     """
     headers = {
         "User-Agent": "Mozilla/5.0 (compatible; comercial-tnt-spotify-bot/2.0)",
@@ -99,7 +91,6 @@ def scrape_comercial_tnt() -> list[dict]:
         if not song_number_div:
             continue
 
-        # O número de posição é o primeiro <div> filho directo sem classe
         pos_div = song_number_div.find("div", recursive=False)
         if not pos_div:
             continue
@@ -108,7 +99,6 @@ def scrape_comercial_tnt() -> list[dict]:
             continue
         pos = int(pos_text)
 
-        # Tentativa 1: classes explícitas songTitle / songArtist
         title_div  = inside.find("div", class_="songTitle")
         artist_div = inside.find("div", class_="songArtist")
 
@@ -116,17 +106,13 @@ def scrape_comercial_tnt() -> list[dict]:
             title  = title_div.get_text(strip=True)
             artist = artist_div.get_text(strip=True)
         else:
-            # Fallback: extrair todos os textos dos filhos directos do inside
-            # e pegar nos primeiros dois que não sejam numéricos nem palavras soltas de metadata
             SKIP_KEYWORDS = {"semanas", "no", "tnt", "ultima", "semana", "em", "novo", "entrada", "=", "^", "v"}
             texts = []
             for child in inside.children:
                 if hasattr(child, "get_text"):
                     t = child.get_text(separator=" ", strip=True)
-                    # Ignorar o bloco da posição e blocos de números/keywords
                     if child == song_number_div:
                         continue
-                    # Ignorar tokens puramente numéricos ou keywords de metadata
                     tokens = t.lower().split()
                     if all(tok.isdigit() or tok in SKIP_KEYWORDS for tok in tokens if tok):
                         continue
@@ -136,7 +122,6 @@ def scrape_comercial_tnt() -> list[dict]:
                 title  = texts[0]
                 artist = texts[1]
             elif len(texts) == 1:
-                # Último recurso: tentar separar por " - " ou " — "
                 sep = " \u2014 " if " \u2014 " in texts[0] else " - "
                 parts = texts[0].split(sep, 1)
                 title  = parts[0].strip()
@@ -151,7 +136,6 @@ def scrape_comercial_tnt() -> list[dict]:
 
 
 def search_spotify(token: str, artist: str, title: str) -> str | None:
-    """Pesquisa uma track no Spotify com várias tentativas progressivas."""
     queries = [
         f'track:"{title}" artist:"{artist}"',
         f'{title} {artist}',
@@ -172,6 +156,11 @@ def replace_playlist(token: str, playlist_id: str, uris: list[str]) -> None:
     for i in range(100, len(uris), 100):
         spotify_request("POST", url, token, json={"uris": uris[i:i + 100], "position": i})
         time.sleep(0.2)
+
+
+def update_playlist_description(token: str, playlist_id: str, description: str) -> None:
+    url = SPOTIFY_PLAYLIST_URL.format(id=playlist_id)
+    spotify_request("PUT", url, token, json={"description": description})
 
 
 def main() -> None:
@@ -212,7 +201,10 @@ def main() -> None:
     replace_playlist(token, playlist_id, uris)
     print("  Playlist actualizada com sucesso!")
 
-    now = datetime.datetime.utcnow().strftime("%d/%m/%Y %H:%M UTC")
+    lisbon_str = datetime.datetime.now(ZoneInfo("Europe/Lisbon")).strftime("%d/%m/%Y %H:%M")
+    update_playlist_description(token, playlist_id, f"Actualizado a {lisbon_str}")
+
+    now = datetime.datetime.now(ZoneInfo("Europe/Lisbon")).strftime("%d/%m/%Y %H:%M")
     playlist_url = f"https://open.spotify.com/playlist/{playlist_id}"
     summary = [
         "## Rádio Comercial TNT Top 20 -> Spotify",

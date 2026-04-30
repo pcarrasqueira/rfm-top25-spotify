@@ -16,10 +16,12 @@ import time
 import datetime
 import requests
 from bs4 import BeautifulSoup
+from zoneinfo import ZoneInfo
 
 SPOTIFY_TOKEN_URL      = "https://accounts.spotify.com/api/token"
 SPOTIFY_SEARCH_URL     = "https://api.spotify.com/v1/search"
 SPOTIFY_PLAYLIST_ITEMS = "https://api.spotify.com/v1/playlists/{id}/items"
+SPOTIFY_PLAYLIST_URL   = "https://api.spotify.com/v1/playlists/{id}"
 SPOTIFY_ME_URL         = "https://api.spotify.com/v1/me"
 RFM_URL                = "https://rfm.pt/top25rfm"
 
@@ -99,17 +101,17 @@ def search_spotify(token: str, artist: str, title: str) -> str | None:
 
 
 def replace_playlist(token: str, playlist_id: str, uris: list[str]) -> None:
-    """Substitui o conteudo completo da playlist usando PUT (max 100 tracks).
-    Para mais de 100 tracks: PUT com os primeiros 100, POST com o resto.
-    O Top 25 cabe sempre num unico PUT.
-    """
+    """Substitui o conteudo completo da playlist usando PUT (max 100 tracks)."""
     url = SPOTIFY_PLAYLIST_ITEMS.format(id=playlist_id)
-    # PUT substitui tudo de uma vez (até 100 uris)
     spotify_request("PUT", url, token, json={"uris": uris[:100]})
-    # Se houver mais de 100 (improvável no Top 25), adiciona o resto
     for i in range(100, len(uris), 100):
         spotify_request("POST", url, token, json={"uris": uris[i:i + 100], "position": i})
         time.sleep(0.2)
+
+
+def update_playlist_description(token: str, playlist_id: str, description: str) -> None:
+    url = SPOTIFY_PLAYLIST_URL.format(id=playlist_id)
+    spotify_request("PUT", url, token, json={"description": description})
 
 
 def main() -> None:
@@ -151,14 +153,18 @@ def main() -> None:
         print("ERRO: Nenhum track encontrado no Spotify.")
         sys.exit(1)
 
-    # 5. Substituir playlist (PUT em vez de DELETE + POST)
+    # 5. Substituir playlist
     playlist_id = os.environ["SPOTIFY_PLAYLIST_ID"]
     print(f"\nA substituir playlist com {len(uris)} tracks...")
     replace_playlist(token, playlist_id, uris)
     print("Playlist atualizada com sucesso! ✓")
 
-    # 6. Job Summary
-    now = datetime.datetime.utcnow().strftime("%d/%m/%Y %H:%M UTC")
+    # 6. Actualizar descricao
+    lisbon_str = datetime.datetime.now(ZoneInfo("Europe/Lisbon")).strftime("%d/%m/%Y %H:%M")
+    update_playlist_description(token, playlist_id, f"Actualizado a {lisbon_str}")
+
+    # 7. Job Summary
+    now = datetime.datetime.now(ZoneInfo("Europe/Lisbon")).strftime("%d/%m/%Y %H:%M")
     playlist_url = f"https://open.spotify.com/playlist/{playlist_id}"
     summary = [
         "## 🎵 RFM Top 25 → Spotify",

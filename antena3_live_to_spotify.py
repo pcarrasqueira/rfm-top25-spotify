@@ -22,10 +22,12 @@ import datetime
 import unicodedata
 import requests
 from bs4 import BeautifulSoup
+from zoneinfo import ZoneInfo
 
 SPOTIFY_TOKEN_URL      = "https://accounts.spotify.com/api/token"
 SPOTIFY_SEARCH_URL     = "https://api.spotify.com/v1/search"
 SPOTIFY_PLAYLIST_ITEMS = "https://api.spotify.com/v1/playlists/{id}/items"
+SPOTIFY_PLAYLIST_URL   = "https://api.spotify.com/v1/playlists/{id}"
 ANTENA3_URL            = "https://antena3.rtp.pt/ja-tocou/"
 EPG_URL                = "https://www.rtp.pt/EPG/json/rtp-channels-page/list-grid/radio/3/{date}"
 PLAYLIST_LIMIT         = 300
@@ -136,9 +138,9 @@ def fetch_tracks() -> list[dict]:
         print("  [ERROR] Lista de musicas nao encontrada na pagina")
         return []
 
-    seen            = set()
-    tracks          = []
-    skipped_epg     = 0
+    seen              = set()
+    tracks            = []
+    skipped_epg       = 0
     skipped_no_artist = 0
 
     for li in song_list.find_all("li", recursive=False):
@@ -200,7 +202,7 @@ def search_track(token: str, artist: str, title: str) -> str | None:
         items = resp.json().get("tracks", {}).get("items", [])
         if items:
             return items[0]["uri"]
-        time.sleep(0.2)
+        time.sleep(0.3)
     return None
 
 
@@ -243,6 +245,11 @@ def trim_playlist(token: str, playlist_id: str, current_uris: list[str], slots_n
         remove_items(token, playlist_id, to_remove)
         current_uris = current_uris[:-overflow]
     return current_uris, removed
+
+
+def update_playlist_description(token: str, playlist_id: str, description: str) -> None:
+    url = SPOTIFY_PLAYLIST_URL.format(id=playlist_id)
+    spotify("PUT", url, token, json={"description": description})
 
 
 def main() -> None:
@@ -302,6 +309,9 @@ def main() -> None:
         print("Playlist actualizada!")
     else:
         print("Nenhum track novo para adicionar.")
+
+    lisbon_str = datetime.datetime.now(ZoneInfo("Europe/Lisbon")).strftime("%d/%m/%Y %H:%M")
+    update_playlist_description(token, playlist_id, f"Actualizado a {lisbon_str}")
 
     now          = datetime.datetime.now(datetime.UTC).strftime("%d/%m/%Y %H:%M UTC")
     playlist_url = f"https://open.spotify.com/playlist/{playlist_id}"
