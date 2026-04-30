@@ -7,6 +7,8 @@ e sem duplicados. Corre hora a hora via GitHub Actions.
 Entradas cujo titulo OU artista coincida com um programa da grelha EPG da Antena 3 sao
 automaticamente ignoradas (ex: "Manhãs da 3", "Logo Se Vê", "Portugália", etc.)
 
+Entradas sem artista sao ignoradas.
+
 Estrutura de cada <li> na pagina: ['HH:MM', 'HH:MM', 'Titulo', 'Artista']
 O horario aparece duplicado no HTML - filtramos todos os tokens HH:MM.
 O UL das musicas tem 100+ items directos com horas.
@@ -134,9 +136,10 @@ def fetch_tracks() -> list[dict]:
         print("  [ERROR] Lista de musicas nao encontrada na pagina")
         return []
 
-    seen        = set()
-    tracks      = []
-    skipped_epg = 0
+    seen            = set()
+    tracks          = []
+    skipped_epg     = 0
+    skipped_no_artist = 0
 
     for li in song_list.find_all("li", recursive=False):
         parts = [t.strip() for t in li.stripped_strings]
@@ -154,9 +157,13 @@ def fetch_tracks() -> list[dict]:
         if DEBUG:
             print(f"  [DBG] {time_str} | titulo={title!r} | artista={artist!r}")
 
+        if not artist:
+            skipped_no_artist += 1
+            continue
+
         if epg_programs and (
             normalize(title) in epg_programs or
-            (artist and normalize(artist) in epg_programs)
+            normalize(artist) in epg_programs
         ):
             skipped_epg += 1
             continue
@@ -178,6 +185,8 @@ def fetch_tracks() -> list[dict]:
             seen.add(key)
             tracks.append({"artist": artist, "title": title})
 
+    if skipped_no_artist:
+        print(f"  {skipped_no_artist} entradas ignoradas (sem artista)")
     if skipped_epg:
         print(f"  {skipped_epg} entradas ignoradas (programas EPG)")
     print(f"  {len(tracks)} tracks unicos na ultima {WINDOW_HOURS}h")
@@ -185,11 +194,7 @@ def fetch_tracks() -> list[dict]:
 
 
 def search_track(token: str, artist: str, title: str) -> str | None:
-    if artist:
-        queries = [f'track:"{title}" artist:"{artist}"', f"{artist} {title}"]
-    else:
-        queries = [f'track:"{title}"', title]
-    for query in queries:
+    for query in [f'track:"{title}" artist:"{artist}"', f"{artist} {title}"]:
         resp  = spotify("GET", SPOTIFY_SEARCH_URL, token,
                         params={"q": query, "type": "track", "limit": 5, "market": "PT"})
         items = resp.json().get("tracks", {}).get("items", [])
