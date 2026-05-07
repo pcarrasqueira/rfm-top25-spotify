@@ -68,10 +68,9 @@ def fetch_tracks() -> list[dict]:
         "X-Requested-With": "XMLHttpRequest",
         "Accept": "application/json, text/javascript, */*; q=0.01",
     }
-    utc_now       = datetime.datetime.now(datetime.UTC)
-    lisbon_offset = 2 if 3 < utc_now.month < 11 else 1
-    lisbon_now    = (utc_now + datetime.timedelta(hours=lisbon_offset)).replace(tzinfo=None)
-    cutoff        = lisbon_now - datetime.timedelta(hours=WINDOW_HOURS)
+    tz         = ZoneInfo("Europe/Lisbon")
+    lisbon_now = datetime.datetime.now(tz).replace(tzinfo=None)
+    cutoff     = lisbon_now - datetime.timedelta(hours=WINDOW_HOURS)
     date_str      = lisbon_now.strftime("%Y-%m-%d")
     url           = COMERCIAL_LOG_URL.format(date=date_str)
 
