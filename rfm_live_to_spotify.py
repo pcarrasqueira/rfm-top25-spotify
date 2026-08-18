@@ -6,12 +6,21 @@ e sem duplicados. Corre hora a hora via GitHub Actions.
 """
 
 import os
+import re
 import sys
 import time
 import datetime
 import requests
 from bs4 import BeautifulSoup
 from zoneinfo import ZoneInfo
+from spotify_client import (
+    QuotaExceededError,
+    RateLimitError,
+    get_access_token,
+    normalize_track_key,
+    playlist_entry_to_match,
+    spotify_request as spotify,
+)
 
 SPOTIFY_TOKEN_URL      = "https://accounts.spotify.com/api/token"
 SPOTIFY_SEARCH_URL     = "https://api.spotify.com/v1/search"
@@ -19,12 +28,9 @@ SPOTIFY_PLAYLIST_ITEMS = "https://api.spotify.com/v1/playlists/{id}/items"
 SPOTIFY_PLAYLIST_URL   = "https://api.spotify.com/v1/playlists/{id}"
 RFM_HISTORY_URL        = "https://rfm.pt/que-musica-era"
 PLAYLIST_LIMIT         = 300
-
-
-class RateLimitError(Exception):
-    def __init__(self, retry_after: int):
-        super().__init__(f"Spotify rate limit: aguardar {retry_after}s")
-        self.retry_after = retry_after
+WINDOW_HOURS           = 1
+RFM_TIME_RE            = re.compile(r"\b\d{1,2}:\d{2}\b")
+LISBON_TZ              = ZoneInfo("Europe/Lisbon")
 
 
 def write_summary(lines: list[str]) -> None:
@@ -33,33 +39,6 @@ def write_summary(lines: list[str]) -> None:
         return
     with open(summary_file, "a", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
-
-
-def get_access_token() -> str:
-    resp = requests.post(
-        SPOTIFY_TOKEN_URL,
-        data={"grant_type": "refresh_token", "refresh_token": os.environ["SPOTIFY_REFRESH_TOKEN"]},
-        auth=(os.environ["SPOTIFY_CLIENT_ID"], os.environ["SPOTIFY_CLIENT_SECRET"]),
-        timeout=15,
-    )
-    resp.raise_for_status()
-    return resp.json()["access_token"]
-
-
-def spotify(method: str, url: str, token: str, **kwargs) -> requests.Response:
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    for attempt in range(5):
-        resp = requests.request(method, url, headers=headers, timeout=15, **kwargs)
-        if resp.status_code == 429:
-            retry_after = int(resp.headers.get("Retry-After", 2 ** attempt))
-            print(f"  HTTP 429 {method} {url}: Too many requests, aguardar {retry_after}s")
-            time.sleep(retry_after)
-            continue
-        if not resp.ok:
-            print(f"  HTTP {resp.status_code} {method} {url}: {resp.text[:300]}")
-            resp.raise_for_status()
-        return resp
-    raise RateLimitError(60)
 
 
 def scrape_current() -> list[dict]:
@@ -71,12 +50,31 @@ def scrape_current() -> list[dict]:
         print(f"  Erro ao scrape RFM: {e}")
         return []
 
-    soup   = BeautifulSoup(resp.text, "lxml")
-    tracks = []
-    seen   = set()
+    soup        = BeautifulSoup(resp.text, "lxml")
+    lisbon_now  = datetime.datetime.now(LISBON_TZ)
+    cutoff      = lisbon_now - datetime.timedelta(hours=WINDOW_HOURS)
+    tracks      = []
+    seen        = set()
     for li in soup.select("ul li"):
         children = li.find_all("li")
         if len(children) >= 2:
+            time_match = RFM_TIME_RE.search(li.get_text(" ", strip=True))
+            if not time_match:
+                continue
+            try:
+                hour, minute = (int(part) for part in time_match.group().split(":"))
+                record_dt = datetime.datetime.combine(
+                    lisbon_now.date(),
+                    datetime.time(hour, minute),
+                    tzinfo=LISBON_TZ,
+                )
+            except ValueError:
+                continue
+            if record_dt > lisbon_now + datetime.timedelta(minutes=5):
+                record_dt -= datetime.timedelta(days=1)
+            if record_dt < cutoff:
+                continue
+
             title  = children[0].get_text(strip=True)
             artist = children[1].get_text(strip=True)
             if not title or not artist or title == "Quando" or artist == "Periodo":
@@ -85,6 +83,7 @@ def scrape_current() -> list[dict]:
             if key not in seen:
                 seen.add(key)
                 tracks.append({"artist": artist, "title": title})
+    print(f"  {len(tracks)} tracks unicos na ultima {WINDOW_HOURS}h")
     return tracks
 
 
@@ -92,6 +91,7 @@ def search_track(token: str, artist: str, title: str) -> dict | None:
     for query in [f"track:{title} artist:{artist}", f"{artist} {title}"]:
         resp  = spotify("GET", SPOTIFY_SEARCH_URL, token,
                         params={"q": query, "type": "track", "limit": 10, "market": "PT"})
+        time.sleep(0.3)
         items = resp.json().get("tracks", {}).get("items", [])
         if items:
             item = items[0]
@@ -100,23 +100,29 @@ def search_track(token: str, artist: str, title: str) -> dict | None:
                 "spotify_artist": item["artists"][0]["name"] if item.get("artists") else artist,
                 "spotify_title": item["name"],
             }
-        time.sleep(0.3)
     return None
 
 
-def get_playlist_uris(token: str, playlist_id: str) -> list[str]:
+def get_playlist_uris(
+    token: str, playlist_id: str
+) -> tuple[list[str], dict[tuple[str, str], dict[str, str]]]:
     url    = SPOTIFY_PLAYLIST_ITEMS.format(id=playlist_id)
     uris   = []
+    lookup = {}
     params = {"limit": 100}
     while url:
         data = spotify("GET", url, token, params=params).json()
         for e in data.get("items", []):
             entry = (e or {}).get("item") or (e or {}).get("track")
-            if entry and entry.get("uri") and not entry.get("is_local"):
-                uris.append(entry["uri"])
+            parsed = playlist_entry_to_match(entry)
+            if parsed:
+                match, keys = parsed
+                uris.append(match["uri"])
+                for key in keys:
+                    lookup.setdefault(key, match)
         url    = data.get("next")
         params = {}
-    return uris
+    return uris, lookup
 
 
 def remove_items(token: str, playlist_id: str, uris: list[str]) -> None:
@@ -166,7 +172,7 @@ def main() -> None:
     playlist_id = os.environ["SPOTIFY_LIVE_PLAYLIST_ID"]
 
     print(f"\nA ler playlist actual...")
-    current_uris = get_playlist_uris(token, playlist_id)
+    current_uris, playlist_lookup = get_playlist_uris(token, playlist_id)
     current_set  = set(current_uris)
     print(f"  {len(current_uris)} tracks na playlist")
 
@@ -175,6 +181,12 @@ def main() -> None:
     new_uris = []
     try:
         for t in raw_tracks:
+            match = playlist_lookup.get(normalize_track_key(t["artist"], t["title"]))
+            if match:
+                results.append({"track": t, "status": "skipped", "match": match})
+                print(f"  ~ {t['artist']} - {t['title']} (ja existe; cache da playlist)")
+                continue
+
             match = search_track(token, t["artist"], t["title"])
             if not match:
                 results.append({"track": t, "status": "not_found"})
@@ -186,6 +198,11 @@ def main() -> None:
                 results.append({"track": t, "status": "added", "match": match})
                 new_uris.append(match["uri"])
                 print(f"  \u2713 {t['artist']} - {t['title']}")
+    except QuotaExceededError as e:
+        msg = f"Spotify quota excedida — {e}"
+        print(f"\n  {msg}")
+        write_summary(["## RFM Live -> Spotify", "", f"> ⚠️ {msg}"])
+        sys.exit(1)
     except RateLimitError as e:
         msg = f"\u23f3 Rate limit atingido \u2014 Spotify pede para aguardar **{e.retry_after}s** antes de tentar de novo."
         print(f"\n  {msg}")
@@ -209,8 +226,11 @@ def main() -> None:
     else:
         print("Nenhum track novo para adicionar.")
 
-    lisbon_str = datetime.datetime.now(ZoneInfo("Europe/Lisbon")).strftime("%d/%m/%Y %H:%M")
-    update_playlist_description(token, playlist_id, f"Actualizado a {lisbon_str}")
+    if new_uris:
+        lisbon_str = datetime.datetime.now(ZoneInfo("Europe/Lisbon")).strftime("%d/%m/%Y %H:%M")
+        update_playlist_description(token, playlist_id, f"Actualizado a {lisbon_str}")
+    else:
+        print("Sem alterações na playlist; descrição não atualizada.")
 
     now          = datetime.datetime.now(datetime.UTC).strftime("%d/%m/%Y %H:%M UTC")
     playlist_url = f"https://open.spotify.com/playlist/{playlist_id}"
@@ -244,4 +264,15 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except QuotaExceededError as exc:
+        message = f"Spotify quota excedida — {exc}"
+        print(f"\n  {message}")
+        write_summary(["## RFM Live -> Spotify", "", f"> ⚠️ {message}"])
+        sys.exit(1)
+    except RateLimitError as exc:
+        message = f"Rate limit Spotify — aguardar aproximadamente {exc.retry_after}s."
+        print(f"\n  {message}")
+        write_summary(["## RFM Live -> Spotify", "", f"> ⚠️ {message}"])
+        sys.exit(1)

@@ -8,10 +8,14 @@ on:
     - cron: '0 9 * * 1'    # Segunda 10:00 Lisboa (09:00 UTC verao)
   workflow_dispatch:
 
+concurrency:
+  group: spotify-api
+  cancel-in-progress: false
+
 jobs:
   update-playlist:
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4

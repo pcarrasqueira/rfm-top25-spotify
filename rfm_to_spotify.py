@@ -17,6 +17,12 @@ import datetime
 import requests
 from bs4 import BeautifulSoup
 from zoneinfo import ZoneInfo
+from spotify_client import (
+    QuotaExceededError,
+    RateLimitError,
+    get_access_token,
+    spotify_request,
+)
 
 SPOTIFY_TOKEN_URL      = "https://accounts.spotify.com/api/token"
 SPOTIFY_SEARCH_URL     = "https://api.spotify.com/v1/search"
@@ -32,34 +38,6 @@ def write_summary(lines: list[str]) -> None:
         return
     with open(summary_file, "a", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
-
-
-def spotify_request(method: str, url: str, token: str, **kwargs) -> requests.Response:
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-    }
-    resp = requests.request(method, url, headers=headers, timeout=15, **kwargs)
-    if not resp.ok:
-        print(f"  HTTP {resp.status_code} {method} {url}")
-        print(f"  Response body: {resp.text[:500]}")
-        resp.raise_for_status()
-    return resp
-
-
-def get_access_token() -> str:
-    resp = requests.post(
-        SPOTIFY_TOKEN_URL,
-        data={"grant_type": "refresh_token", "refresh_token": os.environ["SPOTIFY_REFRESH_TOKEN"]},
-        auth=(os.environ["SPOTIFY_CLIENT_ID"], os.environ["SPOTIFY_CLIENT_SECRET"]),
-        timeout=15,
-    )
-    if not resp.ok:
-        print(f"  HTTP {resp.status_code} ao obter token: {resp.text[:300]}")
-        resp.raise_for_status()
-    data = resp.json()
-    print(f"  Scopes: {data.get('scope', '(vazio)')}")
-    return data["access_token"]
 
 
 def scrape_rfm_top25() -> list[dict]:
@@ -95,6 +73,7 @@ def search_spotify(token: str, artist: str, title: str) -> dict | None:
     for q in queries:
         params = {"q": q, "type": "track", "limit": 10, "market": "PT"}
         resp  = spotify_request("GET", SPOTIFY_SEARCH_URL, token, params=params)
+        time.sleep(0.3)
         items = resp.json().get("tracks", {}).get("items", [])
         if items:
             item = items[0]
@@ -103,7 +82,7 @@ def search_spotify(token: str, artist: str, title: str) -> dict | None:
                 "spotify_artist": item["artists"][0]["name"] if item.get("artists") else artist,
                 "spotify_title": item["name"],
             }
-        time.sleep(0.1)
+        time.sleep(0.3)
     return None
 
 
@@ -192,4 +171,15 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except QuotaExceededError as exc:
+        message = f"Spotify quota excedida — {exc}"
+        print(f"\n  {message}")
+        write_summary(["## RFM Top 25 -> Spotify", "", f"> ⚠️ {message}"])
+        sys.exit(1)
+    except RateLimitError as exc:
+        message = f"Rate limit Spotify — aguardar aproximadamente {exc.retry_after}s."
+        print(f"\n  {message}")
+        write_summary(["## RFM Top 25 -> Spotify", "", f"> ⚠️ {message}"])
+        sys.exit(1)

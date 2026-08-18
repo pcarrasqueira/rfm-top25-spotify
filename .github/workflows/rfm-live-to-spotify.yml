@@ -4,13 +4,17 @@ run-name: "RFM Live → Spotify | ${{ github.event_name == 'workflow_dispatch' &
 
 on:
   schedule:
-    - cron: '48 * * * *'  # hora a hora, ao minuto :00
+    - cron: '48 * * * *'  # hora a hora, ao minuto :48
   workflow_dispatch:
+
+concurrency:
+  group: spotify-api
+  cancel-in-progress: false
 
 jobs:
   update-playlist:
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 

@@ -4,8 +4,12 @@ run-name: "Antena 3 Live -> Spotify | ${{ github.event_name == 'workflow_dispatc
 
 on:
   schedule:
-    - cron: '48 * * * *'  # hora a hora, ao minuto :48
+    - cron: '6 * * * *'   # hora a hora, ao minuto :06
   workflow_dispatch:
+
+concurrency:
+  group: spotify-api
+  cancel-in-progress: false
 
 jobs:
   update-playlist:

@@ -4,9 +4,13 @@ run-name: "Comercial TNT Top 20 -> Spotify | ${{ github.event_name == 'workflow_
 
 on:
   schedule:
-    - cron: '30 22 * * 0'  # Domingo 23:30 Lisboa (22:30 UTC verao)
+    - cron: '54 22 * * 0'  # Domingo 23:54 Lisboa (22:54 UTC verao)
     - cron: '0 9 * * 1'    # Segunda 10:00 Lisboa (09:00 UTC verao)
   workflow_dispatch:
+
+concurrency:
+  group: spotify-api
+  cancel-in-progress: false
 
 jobs:
   update-playlist:

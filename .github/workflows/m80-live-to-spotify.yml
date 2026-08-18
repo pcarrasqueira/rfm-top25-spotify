@@ -7,6 +7,10 @@ on:
     - cron: '36 * * * *'  # hora a hora, ao minuto :36
   workflow_dispatch:
 
+concurrency:
+  group: spotify-api
+  cancel-in-progress: false
+
 jobs:
   update-playlist:
     runs-on: ubuntu-latest
