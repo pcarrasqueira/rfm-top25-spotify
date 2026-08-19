@@ -5,6 +5,7 @@ from unittest.mock import Mock, patch
 
 import requests
 
+import batida_live_to_spotify
 import rfm_live_to_spotify
 from spotify_client import (
     QuotaExceededError,
@@ -205,6 +206,9 @@ class SpotifyClientTests(unittest.TestCase):
             tracks = rfm_live_to_spotify.scrape_current()
 
         self.assertEqual(tracks, [{"artist": "Artista Atual", "title": "Atual"}])
+
+    def test_batida_uses_one_hour_window(self) -> None:
+        self.assertEqual(batida_live_to_spotify.WINDOW_HOURS, 1)
 
 
 if __name__ == "__main__":

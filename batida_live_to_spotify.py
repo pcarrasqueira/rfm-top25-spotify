@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Recolhe as musicas tocadas na Batida FM na ultima 3h via API JSON:
+Recolhe as musicas tocadas na Batida FM na ultima 1h via API JSON:
   https://listenapi.planetradio.co.uk/api9.2/events/bfm/{datetime}/{count}
 """
 
@@ -27,7 +27,7 @@ SPOTIFY_PLAYLIST_URL   = "https://api.spotify.com/v1/playlists/{id}"
 PLANETRADIO_API        = "https://listenapi.planetradio.co.uk/api9.2/events/bfm/{datetime}/{count}"
 API_EVENT_COUNT        = 100
 PLAYLIST_LIMIT         = 300
-WINDOW_HOURS           = 3
+WINDOW_HOURS           = 1
 LISBON_TZ              = ZoneInfo("Europe/Lisbon")
 
 
