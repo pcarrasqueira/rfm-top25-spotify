@@ -22,6 +22,7 @@ SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
 DEFAULT_TIMEOUT = 15
 MAX_RETRIES = 3
 MAX_JITTER_SECONDS = 0.25
+TRANSIENT_STATUS_CODES = frozenset({500, 502, 503, 504})
 
 
 class SpotifyAPIError(RuntimeError):
@@ -108,6 +109,25 @@ def _normal_retry_delay(attempt: int, retry_after: str | None) -> float:
     return float(min(2**attempt, 30))
 
 
+def _sleep_before_retry(
+    *,
+    attempt: int,
+    max_retries: int,
+    retry_after: str | None,
+    sleep_fn: Callable[[float], None],
+    jitter_fn: Callable[[float, float], float],
+    message: str,
+) -> None:
+    delay = _normal_retry_delay(attempt, retry_after)
+    jitter = max(0.0, jitter_fn(0.0, MAX_JITTER_SECONDS))
+    sleep_for = delay + jitter
+    print(
+        f"  {message}; tentativa {attempt + 1}/{max_retries + 1}. "
+        f"A aguardar {sleep_for:.2f}s antes da próxima tentativa..."
+    )
+    sleep_fn(sleep_for)
+
+
 def _log_rate_limit(
     method: str,
     url: str,
@@ -139,7 +159,7 @@ def spotify_request(
     jitter_fn: Callable[[float, float], float] = random.uniform,
     **kwargs: Any,
 ) -> requests.Response:
-    """Call the Web API, retrying temporary 429s without retry storms."""
+    """Call the Web API, retrying temporary rate limits and server failures."""
 
     headers = {
         "Authorization": f"Bearer {token}",
@@ -148,14 +168,48 @@ def spotify_request(
     headers.update(kwargs.pop("headers", {}))
 
     for attempt in range(max_retries + 1):
-        response = requests.request(
-            method,
-            url,
-            headers=headers,
-            timeout=timeout,
-            **kwargs,
-        )
+        try:
+            response = requests.request(
+                method,
+                url,
+                headers=headers,
+                timeout=timeout,
+                **kwargs,
+            )
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            if attempt >= max_retries:
+                print(f"  {type(exc).__name__} {method} {url}: retries esgotados")
+                raise
+            _sleep_before_retry(
+                attempt=attempt,
+                max_retries=max_retries,
+                retry_after=None,
+                sleep_fn=sleep_fn,
+                jitter_fn=jitter_fn,
+                message=f"{type(exc).__name__} ao chamar {method} {url}",
+            )
+            continue
+
         if response.status_code != 429:
+            if response.status_code in TRANSIENT_STATUS_CODES and attempt < max_retries:
+                retry_header = response.headers.get("Retry-After")
+                body = _response_body(response)
+                print(
+                    f"  HTTP {response.status_code} {method} {url}: "
+                    f"tentativa {attempt + 1}/{max_retries + 1}"
+                )
+                if body:
+                    print(f"  Response body: {body}")
+                _sleep_before_retry(
+                    attempt=attempt,
+                    max_retries=max_retries,
+                    retry_after=retry_header,
+                    sleep_fn=sleep_fn,
+                    jitter_fn=jitter_fn,
+                    message=f"erro transitório HTTP {response.status_code}",
+                )
+                continue
+
             if not response.ok:
                 body = _response_body(response)
                 print(f"  HTTP {response.status_code} {method} {url}")
@@ -176,14 +230,18 @@ def spotify_request(
         if reason == "QUOTA_EXCEEDED":
             raise QuotaExceededError(**error_context)
 
-        delay = _normal_retry_delay(attempt, retry_header or None)
         if attempt >= max_retries:
+            delay = _normal_retry_delay(attempt, retry_header or None)
             raise RateLimitError(delay, **error_context)
 
-        jitter = max(0.0, jitter_fn(0.0, MAX_JITTER_SECONDS))
-        sleep_for = delay + jitter
-        print(f"  A aguardar {sleep_for:.2f}s antes da próxima tentativa...")
-        sleep_fn(sleep_for)
+        _sleep_before_retry(
+            attempt=attempt,
+            max_retries=max_retries,
+            retry_after=retry_header or None,
+            sleep_fn=sleep_fn,
+            jitter_fn=jitter_fn,
+            message="rate limit Spotify",
+        )
 
     raise AssertionError("unreachable")
 
@@ -195,7 +253,7 @@ def get_access_token(
     sleep_fn: Callable[[float], None] = time.sleep,
     jitter_fn: Callable[[float, float], float] = random.uniform,
 ) -> str:
-    """Refresh the OAuth token, including bounded handling of token-endpoint 429s."""
+    """Refresh the OAuth token with bounded handling of transient failures."""
 
     data = {
         "grant_type": "refresh_token",
@@ -207,13 +265,47 @@ def get_access_token(
     )
 
     for attempt in range(max_retries + 1):
-        response = requests.post(
-            SPOTIFY_TOKEN_URL,
-            data=data,
-            auth=auth,
-            timeout=timeout,
-        )
+        try:
+            response = requests.post(
+                SPOTIFY_TOKEN_URL,
+                data=data,
+                auth=auth,
+                timeout=timeout,
+            )
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            if attempt >= max_retries:
+                print(f"  {type(exc).__name__} ao obter token: retries esgotados")
+                raise
+            _sleep_before_retry(
+                attempt=attempt,
+                max_retries=max_retries,
+                retry_after=None,
+                sleep_fn=sleep_fn,
+                jitter_fn=jitter_fn,
+                message=f"{type(exc).__name__} ao obter o token",
+            )
+            continue
+
         if response.status_code != 429:
+            if response.status_code in TRANSIENT_STATUS_CODES and attempt < max_retries:
+                retry_header = response.headers.get("Retry-After")
+                body = _response_body(response)
+                print(
+                    f"  HTTP {response.status_code} ao obter token: "
+                    f"tentativa {attempt + 1}/{max_retries + 1}"
+                )
+                if body:
+                    print(f"  Token response body: {body}")
+                _sleep_before_retry(
+                    attempt=attempt,
+                    max_retries=max_retries,
+                    retry_after=retry_header,
+                    sleep_fn=sleep_fn,
+                    jitter_fn=jitter_fn,
+                    message=f"erro transitório HTTP {response.status_code} ao obter o token",
+                )
+                continue
+
             if not response.ok:
                 body = _response_body(response)
                 print(f"  HTTP {response.status_code} ao obter token")
@@ -236,12 +328,17 @@ def get_access_token(
         if reason == "QUOTA_EXCEEDED":
             raise QuotaExceededError(**error_context)
 
-        delay = _normal_retry_delay(attempt, retry_header or None)
         if attempt >= max_retries:
+            delay = _normal_retry_delay(attempt, retry_header or None)
             raise RateLimitError(delay, **error_context)
-        sleep_for = delay + max(0.0, jitter_fn(0.0, MAX_JITTER_SECONDS))
-        print(f"  A aguardar {sleep_for:.2f}s antes de renovar o token...")
-        sleep_fn(sleep_for)
+        _sleep_before_retry(
+            attempt=attempt,
+            max_retries=max_retries,
+            retry_after=retry_header or None,
+            sleep_fn=sleep_fn,
+            jitter_fn=jitter_fn,
+            message="rate limit ao renovar o token",
+        )
 
     raise AssertionError("unreachable")
 

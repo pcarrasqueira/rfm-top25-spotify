@@ -5,10 +5,12 @@ from unittest.mock import Mock, patch
 
 import requests
 
+import batida_live_to_spotify
 import rfm_live_to_spotify
 from spotify_client import (
     QuotaExceededError,
     RateLimitError,
+    get_access_token,
     normalize_track_key,
     parse_retry_after,
     playlist_entry_to_match,
@@ -51,6 +53,82 @@ class SpotifyClientTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(request.call_count, 2)
         sleep.assert_called_once_with(3.0)
+
+    def test_retries_transient_5xx_using_backoff(self) -> None:
+        request = Mock(
+            side_effect=[
+                make_response(502, {"error": {"message": "Bad Gateway"}}),
+                make_response(200, {"ok": True}),
+            ]
+        )
+        sleep = Mock()
+
+        with patch("spotify_client.requests.request", request):
+            response = spotify_request(
+                "GET",
+                "https://api.spotify.com/v1/test",
+                "token",
+                max_retries=1,
+                sleep_fn=sleep,
+                jitter_fn=lambda _minimum, _maximum: 0.0,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(request.call_count, 2)
+        sleep.assert_called_once_with(1.0)
+
+    def test_retries_transient_connection_error(self) -> None:
+        request = Mock(
+            side_effect=[
+                requests.ConnectionError("connection reset"),
+                make_response(200, {"ok": True}),
+            ]
+        )
+        sleep = Mock()
+
+        with patch("spotify_client.requests.request", request):
+            response = spotify_request(
+                "GET",
+                "https://api.spotify.com/v1/test",
+                "token",
+                max_retries=1,
+                sleep_fn=sleep,
+                jitter_fn=lambda _minimum, _maximum: 0.0,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(request.call_count, 2)
+        sleep.assert_called_once_with(1.0)
+
+    def test_get_access_token_retries_transient_5xx(self) -> None:
+        request = Mock(
+            side_effect=[
+                make_response(503, {"error": "temporarily unavailable"}),
+                make_response(200, {"access_token": "access-token"}),
+            ]
+        )
+        sleep = Mock()
+
+        with (
+            patch.dict(
+                "os.environ",
+                {
+                    "SPOTIFY_REFRESH_TOKEN": "refresh-token",
+                    "SPOTIFY_CLIENT_ID": "client-id",
+                    "SPOTIFY_CLIENT_SECRET": "client-secret",
+                },
+            ),
+            patch("spotify_client.requests.post", request),
+        ):
+            token = get_access_token(
+                max_retries=1,
+                sleep_fn=sleep,
+                jitter_fn=lambda _minimum, _maximum: 0.0,
+            )
+
+        self.assertEqual(token, "access-token")
+        self.assertEqual(request.call_count, 2)
+        sleep.assert_called_once_with(1.0)
 
     def test_quota_exceeded_is_not_retried(self) -> None:
         request = Mock(
@@ -128,6 +206,9 @@ class SpotifyClientTests(unittest.TestCase):
             tracks = rfm_live_to_spotify.scrape_current()
 
         self.assertEqual(tracks, [{"artist": "Artista Atual", "title": "Atual"}])
+
+    def test_batida_uses_one_hour_window(self) -> None:
+        self.assertEqual(batida_live_to_spotify.WINDOW_HOURS, 1)
 
 
 if __name__ == "__main__":
