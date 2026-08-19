@@ -137,7 +137,7 @@ python batida_live_to_spotify.py
 - **Antena 3 Live**: usa o EPG publico da RTP (`programas.rtp.pt`) para mapear programas e a pagina de cada programa para extrair as musicas tocadas.
 - **M80 Live**: usa o historico JSON publico da M80 para extrair as musicas tocadas na ultima hora.
 - **Batida FM Live**: usa a API `listenapi.planetradio.co.uk` com o codigo de estacao `bfm`, devolvendo os eventos das ultimas N horas em JSON.
-- **Spotify rate limits**: todos os workflows partilham um grupo de concorrencia e um cliente comum com tratamento de `Retry-After` e `QUOTA_EXCEEDED`.
+- **Spotify rate limits**: todos os workflows partilham um grupo de concorrencia e um cliente comum com tratamento de `Retry-After`, `QUOTA_EXCEEDED` e retries limitados para falhas transitórias 5xx/rede.
 - **Refresh Token**: nao expira, a nao ser que revogues o acesso em [spotify.com/account/apps](https://www.spotify.com/account/apps).
 - **GitHub Actions (plano gratuito)**: 2000 min/mes. Os cinco workflows hora-a-hora sao escalonados e serializados para evitar bursts na API Spotify.
 
