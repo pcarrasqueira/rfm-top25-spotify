@@ -8,11 +8,14 @@ from __future__ import annotations
 
 import datetime
 import email.utils
+import json
+import math
 import os
+from pathlib import Path
 import random
 import time
 import unicodedata
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Any
 
 import requests
@@ -23,6 +26,14 @@ DEFAULT_TIMEOUT = 15
 MAX_RETRIES = 3
 MAX_JITTER_SECONDS = 0.25
 TRANSIENT_STATUS_CODES = frozenset({500, 502, 503, 504})
+STATE_DIR_ENV = "SPOTIFY_STATE_DIR"
+STATE_VERSION = 2
+SEARCH_CACHE_TTL_SECONDS = 90 * 24 * 60 * 60
+NEGATIVE_SEARCH_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
+DEFAULT_QUOTA_BLOCK_SECONDS = 6 * 60 * 60
+SEARCH_CACHE_FILENAME = "search-cache.json"
+PLAYLIST_CACHE_FILENAME = "playlist-cache.json"
+QUOTA_STATE_FILENAME = "quota-state.json"
 
 
 class SpotifyAPIError(RuntimeError):
@@ -60,11 +71,128 @@ class RateLimitError(SpotifyAPIError):
 class QuotaExceededError(SpotifyAPIError):
     """A development-mode quota 429 that should not be retried blindly."""
 
-    def __init__(self, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        retry_after: float | None = None,
+        message: str | None = None,
+        **kwargs: Any,
+    ) -> None:
+        self.retry_after = (
+            max(1, int(math.ceil(retry_after)))
+            if retry_after is not None
+            else None
+        )
         super().__init__(
-            "Spotify development quota excedida (QUOTA_EXCEEDED); retries adiados",
+            message
+            or "Spotify development quota excedida (QUOTA_EXCEEDED); retries adiados",
             **kwargs,
         )
+
+
+class QuotaCircuitOpenError(QuotaExceededError):
+    """A persisted quota block prevents another request from being attempted."""
+
+    def __init__(self, blocked_until: float, **kwargs: Any) -> None:
+        remaining = max(1, int(math.ceil(blocked_until - time.time())))
+        self.blocked_until = blocked_until
+        super().__init__(
+            retry_after=remaining,
+            message=(
+                "Spotify quota em pausa até "
+                f"{datetime.datetime.fromtimestamp(blocked_until, datetime.UTC):%d/%m/%Y %H:%M UTC}"
+            ),
+            status_code=429,
+            reason="QUOTA_EXCEEDED",
+            **kwargs,
+        )
+
+
+def _state_dir() -> Path:
+    return Path(os.environ.get(STATE_DIR_ENV, ".cache/spotify"))
+
+
+def _state_path(filename: str) -> Path:
+    return _state_dir() / filename
+
+
+def _read_state(filename: str) -> dict[str, Any]:
+    path = _state_path(filename)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _write_state(filename: str, payload: dict[str, Any]) -> None:
+    path = _state_path(filename)
+    temporary_path = path.with_name(f".{path.name}.tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path.write_text(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True),
+            encoding="utf-8",
+        )
+        temporary_path.replace(path)
+    except OSError as exc:
+        # A cache must never make a playlist update fail.
+        print(f"  Aviso: não foi possível guardar estado Spotify: {exc}")
+
+
+def _remove_state(filename: str) -> None:
+    try:
+        _state_path(filename).unlink(missing_ok=True)
+    except OSError as exc:
+        print(f"  Aviso: não foi possível limpar estado Spotify: {exc}")
+
+
+def _quota_block_remaining(now: float | None = None) -> tuple[float, float] | None:
+    payload = _read_state(QUOTA_STATE_FILENAME)
+    try:
+        blocked_until = float(payload.get("blocked_until", 0))
+    except (TypeError, ValueError):
+        blocked_until = 0
+    current_time = time.time() if now is None else now
+    if blocked_until > current_time:
+        return blocked_until, blocked_until - current_time
+    if payload:
+        _remove_state(QUOTA_STATE_FILENAME)
+    return None
+
+
+def record_quota_block(retry_after: float | None) -> float:
+    """Persist a shared cooldown after Spotify reports QUOTA_EXCEEDED."""
+
+    current_time = time.time()
+    requested_delay = (
+        retry_after
+        if retry_after is not None and retry_after > 0
+        else DEFAULT_QUOTA_BLOCK_SECONDS
+    )
+    requested_delay = max(60.0, requested_delay)
+    existing = _quota_block_remaining(current_time)
+    existing_until = existing[0] if existing else 0.0
+    blocked_until = max(existing_until, current_time + requested_delay)
+    _write_state(
+        QUOTA_STATE_FILENAME,
+        {
+            "version": STATE_VERSION,
+            "blocked_until": blocked_until,
+            "recorded_at": current_time,
+            "retry_after": int(math.ceil(requested_delay)),
+            "reason": "QUOTA_EXCEEDED",
+        },
+    )
+    return blocked_until
+
+
+def ensure_quota_available() -> None:
+    """Raise before making any Spotify call while the shared cooldown is active."""
+
+    blocked = _quota_block_remaining()
+    if blocked:
+        blocked_until, _remaining = blocked
+        raise QuotaCircuitOpenError(blocked_until)
 
 
 def _response_body(response: requests.Response) -> str:
@@ -161,6 +289,7 @@ def spotify_request(
 ) -> requests.Response:
     """Call the Web API, retrying temporary rate limits and server failures."""
 
+    ensure_quota_available()
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
@@ -228,7 +357,9 @@ def spotify_request(
             "body": body,
         }
         if reason == "QUOTA_EXCEEDED":
-            raise QuotaExceededError(**error_context)
+            retry_after = parse_retry_after(retry_header or None)
+            record_quota_block(retry_after)
+            raise QuotaExceededError(retry_after=retry_after, **error_context)
 
         if attempt >= max_retries:
             delay = _normal_retry_delay(attempt, retry_header or None)
@@ -255,6 +386,7 @@ def get_access_token(
 ) -> str:
     """Refresh the OAuth token with bounded handling of transient failures."""
 
+    ensure_quota_available()
     data = {
         "grant_type": "refresh_token",
         "refresh_token": os.environ["SPOTIFY_REFRESH_TOKEN"],
@@ -326,7 +458,9 @@ def get_access_token(
             "body": body,
         }
         if reason == "QUOTA_EXCEEDED":
-            raise QuotaExceededError(**error_context)
+            retry_after = parse_retry_after(retry_header or None)
+            record_quota_block(retry_after)
+            raise QuotaExceededError(retry_after=retry_after, **error_context)
 
         if attempt >= max_retries:
             delay = _normal_retry_delay(attempt, retry_header or None)
@@ -356,6 +490,134 @@ def normalize_track_key(artist: str, title: str) -> tuple[str, str]:
     return normalize(artist), normalize(title)
 
 
+def _track_cache_key(artist: str, title: str, market: str) -> str:
+    normalized_artist, normalized_title = normalize_track_key(artist, title)
+    return f"{market.upper()}\x1f{normalized_artist}\x1f{normalized_title}"
+
+
+def _search_cache_lookup(
+    artist: str,
+    title: str,
+    market: str,
+    now: float | None = None,
+) -> tuple[bool, dict[str, str] | None]:
+    payload = _read_state(SEARCH_CACHE_FILENAME)
+    if payload.get("version") != STATE_VERSION:
+        return False, None
+
+    entries = payload.get("tracks")
+    if not isinstance(entries, dict):
+        return False, None
+    entry = entries.get(_track_cache_key(artist, title, market))
+    if not isinstance(entry, dict):
+        return False, None
+
+    try:
+        cached_at = float(entry.get("cached_at", 0))
+    except (TypeError, ValueError):
+        return False, None
+    current_time = time.time() if now is None else now
+    found = entry.get("found", True) is not False
+    ttl = SEARCH_CACHE_TTL_SECONDS if found else NEGATIVE_SEARCH_CACHE_TTL_SECONDS
+    if cached_at <= 0 or current_time - cached_at > ttl:
+        return False, None
+    if not found:
+        return True, None
+
+    uri = entry.get("uri")
+    spotify_artist = entry.get("spotify_artist")
+    spotify_title = entry.get("spotify_title")
+    if not all(isinstance(value, str) and value for value in (uri, spotify_artist, spotify_title)):
+        return False, None
+    return True, {
+        "uri": uri,
+        "spotify_artist": spotify_artist,
+        "spotify_title": spotify_title,
+    }
+
+
+def _save_search_result(
+    artist: str,
+    title: str,
+    market: str,
+    match: dict[str, str] | None,
+) -> None:
+    payload = _read_state(SEARCH_CACHE_FILENAME)
+    if payload.get("version") != STATE_VERSION:
+        payload = {"version": STATE_VERSION, "tracks": {}}
+    entries = payload.setdefault("tracks", {})
+    if not isinstance(entries, dict):
+        entries = {}
+        payload["tracks"] = entries
+
+    entry: dict[str, Any] = {
+        "cached_at": time.time(),
+        "found": match is not None,
+    }
+    if match:
+        entry.update(
+            {
+                "uri": match["uri"],
+                "spotify_artist": match["spotify_artist"],
+                "spotify_title": match["spotify_title"],
+            }
+        )
+    entries[_track_cache_key(artist, title, market)] = entry
+    _write_state(SEARCH_CACHE_FILENAME, payload)
+
+
+def search_track_cached(
+    token: str,
+    artist: str,
+    title: str,
+    *,
+    queries: Iterable[str],
+    limit: int,
+    market: str = "PT",
+    sleep_seconds: float = 0.3,
+    request_fn: Callable[..., requests.Response] | None = None,
+) -> dict[str, str] | None:
+    """Search Spotify once and reuse the result across all scheduled workflows."""
+
+    cache_hit, cached_match = _search_cache_lookup(artist, title, market)
+    if cache_hit:
+        if cached_match:
+            print(f"  ↺ {artist} - {title} (cache persistente Spotify)")
+        else:
+            print(f"  ↺ {artist} - {title} (não encontrado; cache persistente Spotify)")
+        return cached_match
+
+    request = request_fn or spotify_request
+    for query in queries:
+        response = request(
+            "GET",
+            "https://api.spotify.com/v1/search",
+            token,
+            params={"q": query, "type": "track", "limit": limit, "market": market},
+        )
+        if sleep_seconds > 0:
+            time.sleep(sleep_seconds)
+        items = response.json().get("tracks", {}).get("items", [])
+        if not items:
+            continue
+        item = items[0]
+        uri = item.get("uri")
+        if not uri:
+            continue
+        artists = item.get("artists") or []
+        spotify_artist = artists[0].get("name") if artists and isinstance(artists[0], dict) else artist
+        match = {
+            "uri": uri,
+            "spotify_artist": spotify_artist or artist,
+            "spotify_title": item.get("name") or title,
+        }
+        _save_search_result(artist, title, market, match)
+        return match
+
+    _save_search_result(artist, title, market, None)
+    return None
+
+
 def playlist_entry_to_match(
     entry: dict[str, Any] | None,
 ) -> tuple[dict[str, str], list[tuple[str, str]]] | None:
@@ -381,3 +643,112 @@ def playlist_entry_to_match(
     }
     keys = [normalize_track_key(artist, title) for artist in artists]
     return match, keys
+
+
+def _playlist_cache_lookup(
+    playlist_id: str,
+    snapshot_id: str | None,
+) -> tuple[list[str], dict[tuple[str, str], dict[str, str]]] | None:
+    if not snapshot_id:
+        return None
+    payload = _read_state(PLAYLIST_CACHE_FILENAME)
+    if payload.get("version") != STATE_VERSION:
+        return None
+    playlists = payload.get("playlists")
+    if not isinstance(playlists, dict):
+        return None
+    entry = playlists.get(playlist_id)
+    if not isinstance(entry, dict) or entry.get("snapshot_id") != snapshot_id:
+        return None
+
+    uris: list[str] = []
+    lookup: dict[tuple[str, str], dict[str, str]] = {}
+    entries = entry.get("entries")
+    if not isinstance(entries, list):
+        return None
+    for cached_entry in entries:
+        if not isinstance(cached_entry, dict):
+            continue
+        match = cached_entry.get("match")
+        if not isinstance(match, dict):
+            continue
+        uri = match.get("uri")
+        if not isinstance(uri, str) or not uri:
+            continue
+        uris.append(uri)
+        keys = cached_entry.get("keys") or []
+        for key in keys:
+            if isinstance(key, list) and len(key) == 2 and all(isinstance(part, str) for part in key):
+                lookup[(key[0], key[1])] = match
+    return uris, lookup
+
+
+def _save_playlist_cache(
+    playlist_id: str,
+    snapshot_id: str | None,
+    entries: list[dict[str, Any]],
+) -> None:
+    payload = _read_state(PLAYLIST_CACHE_FILENAME)
+    if payload.get("version") != STATE_VERSION:
+        payload = {"version": STATE_VERSION, "playlists": {}}
+    playlists = payload.setdefault("playlists", {})
+    if not isinstance(playlists, dict):
+        playlists = {}
+        payload["playlists"] = playlists
+    playlists[playlist_id] = {
+        "snapshot_id": snapshot_id,
+        "cached_at": time.time(),
+        "entries": entries,
+    }
+    _write_state(PLAYLIST_CACHE_FILENAME, payload)
+
+
+def get_playlist_uris_cached(
+    token: str,
+    playlist_id: str,
+    *,
+    playlist_items_url: str,
+    playlist_url: str,
+    request_fn: Callable[..., requests.Response] | None = None,
+) -> tuple[list[str], dict[tuple[str, str], dict[str, str]]]:
+    """Reuse playlist items when Spotify's snapshot_id is unchanged."""
+
+    request = request_fn or spotify_request
+    metadata = request(
+        "GET",
+        playlist_url.format(id=playlist_id),
+        token,
+        params={"fields": "snapshot_id"},
+    ).json()
+    snapshot_id = metadata.get("snapshot_id") if isinstance(metadata, dict) else None
+    cached = _playlist_cache_lookup(playlist_id, snapshot_id)
+    if cached is not None:
+        print(f"  {len(cached[0])} tracks na playlist (cache snapshot_id)")
+        return cached
+
+    url = playlist_items_url.format(id=playlist_id)
+    uris: list[str] = []
+    lookup: dict[tuple[str, str], dict[str, str]] = {}
+    cached_entries: list[dict[str, Any]] = []
+    params: dict[str, Any] = {"limit": 100}
+    while url:
+        data = request("GET", url, token, params=params).json()
+        for entry_wrapper in data.get("items", []):
+            entry = (entry_wrapper or {}).get("item") or (entry_wrapper or {}).get("track")
+            parsed = playlist_entry_to_match(entry)
+            if parsed:
+                match, keys = parsed
+                uris.append(match["uri"])
+                for key in keys:
+                    lookup.setdefault(key, match)
+                cached_entries.append(
+                    {
+                        "match": match,
+                        "keys": [list(key) for key in keys],
+                    }
+                )
+        url = data.get("next")
+        params = {}
+
+    _save_playlist_cache(playlist_id, snapshot_id, cached_entries)
+    return uris, lookup

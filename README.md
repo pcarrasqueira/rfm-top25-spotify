@@ -138,6 +138,9 @@ python batida_live_to_spotify.py
 - **M80 Live**: usa o historico JSON publico da M80 para extrair as musicas tocadas na ultima hora.
 - **Batida FM Live**: usa a API `listenapi.planetradio.co.uk` com o codigo de estacao `bfm`, devolvendo os eventos da ultima hora em JSON.
 - **Spotify rate limits**: todos os workflows partilham um grupo de concorrencia e um cliente comum com tratamento de `Retry-After`, `QUOTA_EXCEEDED` e retries limitados para falhas transitórias 5xx/rede.
+- **Estado Spotify partilhado**: o GitHub Actions restaura e guarda `.cache/spotify` entre runs. Pesquisas já resolvidas são reutilizadas durante 90 dias, playlists sem alteração são reutilizadas pelo `snapshot_id` e resultados não encontrados ficam em cache durante 7 dias.
+- **Circuit breaker de quota**: quando a API devolve `QUOTA_EXCEEDED`, o `Retry-After` fica persistido. As runs seguintes não renovam o token nem fazem chamadas Spotify até a janela terminar; ficam verdes mas registadas no summary como adiadas.
+- **Cache local**: para alterar a pasta de estado ao correr localmente, define `SPOTIFY_STATE_DIR` (por omissão: `.cache/spotify`). O estado não contém credenciais.
 - **Refresh Token**: nao expira, a nao ser que revogues o acesso em [spotify.com/account/apps](https://www.spotify.com/account/apps).
 - **GitHub Actions (plano gratuito)**: 2000 min/mes. Os cinco workflows hora-a-hora sao escalonados e serializados para evitar bursts na API Spotify.
 

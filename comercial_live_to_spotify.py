@@ -14,8 +14,9 @@ from spotify_client import (
     QuotaExceededError,
     RateLimitError,
     get_access_token,
+    get_playlist_uris_cached,
     normalize_track_key,
-    playlist_entry_to_match,
+    search_track_cached,
     spotify_request as spotify,
 )
 
@@ -78,41 +79,26 @@ def fetch_tracks() -> list[dict]:
 
 
 def search_track(token: str, artist: str, title: str) -> dict | None:
-    for query in [f'track:"{title}" artist:"{artist}"', f"{artist} {title}"]:
-        resp  = spotify("GET", SPOTIFY_SEARCH_URL, token,
-                        params={"q": query, "type": "track", "limit": 5, "market": "PT"})
-        time.sleep(0.3)
-        items = resp.json().get("tracks", {}).get("items", [])
-        if items:
-            item = items[0]
-            return {
-                "uri": item["uri"],
-                "spotify_artist": item["artists"][0]["name"] if item.get("artists") else artist,
-                "spotify_title": item["name"],
-            }
-    return None
+    return search_track_cached(
+        token,
+        artist,
+        title,
+        queries=[f'track:"{title}" artist:"{artist}"', f"{artist} {title}"],
+        limit=5,
+        request_fn=spotify,
+    )
 
 
 def get_playlist_uris(
     token: str, playlist_id: str
 ) -> tuple[list[str], dict[tuple[str, str], dict[str, str]]]:
-    url    = SPOTIFY_PLAYLIST_ITEMS.format(id=playlist_id)
-    uris   = []
-    lookup = {}
-    params = {"limit": 100}
-    while url:
-        data = spotify("GET", url, token, params=params).json()
-        for e in data.get("items", []):
-            entry = (e or {}).get("item") or (e or {}).get("track")
-            parsed = playlist_entry_to_match(entry)
-            if parsed:
-                match, keys = parsed
-                uris.append(match["uri"])
-                for key in keys:
-                    lookup.setdefault(key, match)
-        url    = data.get("next")
-        params = {}
-    return uris, lookup
+    return get_playlist_uris_cached(
+        token,
+        playlist_id,
+        playlist_items_url=SPOTIFY_PLAYLIST_ITEMS,
+        playlist_url=SPOTIFY_PLAYLIST_URL,
+        request_fn=spotify,
+    )
 
 
 def remove_items(token: str, playlist_id: str, uris: list[str]) -> None:
@@ -188,10 +174,10 @@ def main() -> None:
                 new_uris.append(match["uri"])
                 print(f"  \u2713 {t['artist']} - {t['title']}")
     except QuotaExceededError as e:
-        msg = f"Spotify quota excedida — {e}"
+        msg = f"Spotify quota excedida; run adiada — {e}"
         print(f"\n  {msg}")
         write_summary(["## Radio Comercial Live -> Spotify", "", f"> ⚠️ {msg}"])
-        sys.exit(1)
+        sys.exit(0)
     except RateLimitError as e:
         msg = f"\u23f3 Rate limit atingido \u2014 Spotify pede para aguardar **{e.retry_after}s** antes de tentar de novo."
         print(f"\n  {msg}")
@@ -256,10 +242,10 @@ if __name__ == "__main__":
     try:
         main()
     except QuotaExceededError as exc:
-        message = f"Spotify quota excedida — {exc}"
+        message = f"Spotify quota excedida; run adiada — {exc}"
         print(f"\n  {message}")
         write_summary(["## Radio Comercial Live -> Spotify", "", f"> ⚠️ {message}"])
-        sys.exit(1)
+        sys.exit(0)
     except RateLimitError as exc:
         message = f"Rate limit Spotify — aguardar aproximadamente {exc.retry_after}s."
         print(f"\n  {message}")
