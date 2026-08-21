@@ -20,6 +20,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Preparar estado Spotify
+        run: mkdir -p .cache/spotify
+
+      - name: Restaurar estado Spotify
+        uses: actions/cache/restore@v4
+        with:
+          path: .cache/spotify
+          key: spotify-state-v2-${{ github.repository }}-${{ github.run_id }}
+          restore-keys: |
+            spotify-state-v2-${{ github.repository }}-
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -34,4 +45,16 @@ jobs:
           SPOTIFY_CLIENT_SECRET: ${{ secrets.SPOTIFY_CLIENT_SECRET }}
           SPOTIFY_REFRESH_TOKEN: ${{ secrets.SPOTIFY_REFRESH_TOKEN }}
           SPOTIFY_PLAYLIST_ID:   ${{ secrets.SPOTIFY_PLAYLIST_ID }}
+          GITHUB_STEP_SUMMARY:   ${{ runner.temp }}/summary.md
         run: python rfm_to_spotify.py
+
+      - name: Publicar summary
+        if: always()
+        run: cat ${{ runner.temp }}/summary.md >> $GITHUB_STEP_SUMMARY 2>/dev/null || true
+
+      - name: Guardar estado Spotify
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .cache/spotify
+          key: spotify-state-v2-${{ github.repository }}-${{ github.run_id }}

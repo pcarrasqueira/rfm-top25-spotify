@@ -31,6 +31,7 @@ from spotify_client import (
     QuotaExceededError,
     RateLimitError,
     get_access_token,
+    search_track_cached,
     spotify_request,
 )
 
@@ -111,24 +112,17 @@ def scrape_comercial_tnt() -> list[dict]:
 
 
 def search_spotify(token: str, artist: str, title: str) -> dict | None:
-    queries = [
-        f'track:"{title}" artist:"{artist}"',
-        f'{title} {artist}',
-        f'{title}',
-    ]
-    for q in queries:
-        params = {"q": q, "type": "track", "limit": 5, "market": "PT"}
-        resp  = spotify_request("GET", SPOTIFY_SEARCH_URL, token, params=params)
-        time.sleep(0.3)
-        items = resp.json().get("tracks", {}).get("items", [])
-        if items:
-            item = items[0]
-            return {
-                "uri": item["uri"],
-                "spotify_artist": item["artists"][0]["name"] if item.get("artists") else artist,
-                "spotify_title": item["name"],
-            }
-    return None
+    return search_track_cached(
+        token,
+        artist,
+        title,
+        queries=[
+            f'track:"{title}" artist:"{artist}"',
+            f"{title} {artist}",
+            f"{title}",
+        ],
+        limit=5,
+    )
 
 
 def replace_playlist(token: str, playlist_id: str, uris: list[str]) -> None:
@@ -217,10 +211,10 @@ if __name__ == "__main__":
     try:
         main()
     except QuotaExceededError as exc:
-        message = f"Spotify quota excedida — {exc}"
+        message = f"Spotify quota excedida; run adiada — {exc}"
         print(f"\n  {message}")
         write_summary(["## Radio Comercial TNT Top 20 -> Spotify", "", f"> ⚠️ {message}"])
-        sys.exit(1)
+        sys.exit(0)
     except RateLimitError as exc:
         message = f"Rate limit Spotify — aguardar aproximadamente {exc.retry_after}s."
         print(f"\n  {message}")
