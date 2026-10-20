@@ -147,6 +147,58 @@ class SpotifyClientTests(unittest.TestCase):
         self.assertEqual(request.call_count, 2)
         sleep.assert_called_once_with(1.0)
 
+    def test_post_is_not_repeated_when_response_is_lost_after_write(self) -> None:
+        applied = []
+
+        def applied_then_timeout(method, url, **kwargs):
+            applied.extend(kwargs["json"]["uris"])
+            raise requests.Timeout("response lost after Spotify accepted the write")
+
+        sleep = Mock()
+        with patch("spotify_client.requests.request", side_effect=applied_then_timeout) as request:
+            with self.assertRaises(requests.Timeout):
+                spotify_request(
+                    "POST", "https://api.spotify.com/v1/playlists/fake/items", "token",
+                    json={"uris": ["spotify:track:new"]}, sleep_fn=sleep,
+                )
+        self.assertEqual(applied, ["spotify:track:new"])
+        request.assert_called_once()
+        sleep.assert_not_called()
+
+    def test_post_connection_error_and_server_error_are_not_retried(self) -> None:
+        for failure in (requests.ConnectionError("connection reset"), make_response(503, {"error": "unavailable"})):
+            with self.subTest(failure=failure):
+                sleep = Mock()
+                with patch("spotify_client.requests.request", side_effect=[failure, make_response(201, {})]) as request:
+                    with self.assertRaises(requests.RequestException):
+                        spotify_request("POST", "https://api.spotify.com/v1/playlists/fake/items", "token", sleep_fn=sleep)
+                request.assert_called_once()
+                sleep.assert_not_called()
+
+    def test_post_rejected_with_429_can_still_be_retried(self) -> None:
+        request = Mock(side_effect=[
+            make_response(429, {"error": {"message": "Too many requests"}}, {"Retry-After": "1"}),
+            make_response(201, {"snapshot_id": "new"}),
+        ])
+        sleep = Mock()
+        with patch("spotify_client.requests.request", request):
+            response = spotify_request(
+                "POST", "https://api.spotify.com/v1/playlists/fake/items", "token",
+                sleep_fn=sleep, jitter_fn=lambda a, b: 0,
+            )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(request.call_count, 2)
+        sleep.assert_called_once_with(1.0)
+
+    def test_idempotent_writes_keep_transient_failure_retries(self) -> None:
+        for method in ("PUT", "DELETE"):
+            with self.subTest(method=method):
+                request = Mock(side_effect=[make_response(503, {}), make_response(200, {})])
+                with patch("spotify_client.requests.request", request):
+                    response = spotify_request(method, "https://api.spotify.com/v1/playlists/fake/items", "token", sleep_fn=Mock())
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(request.call_count, 2)
+
     def test_quota_exceeded_is_not_retried(self) -> None:
         request = Mock(
             return_value=make_response(
@@ -329,7 +381,9 @@ class SpotifyClientTests(unittest.TestCase):
         """
         response = Mock(text=html)
 
-        with patch("rfm_live_to_spotify.requests.get", return_value=response):
+        with patch("rfm_live_to_spotify.requests.get", return_value=response), patch(
+            "rfm_live_to_spotify.requests.post", return_value=Mock(text="")
+        ):
             tracks = rfm_live_to_spotify.scrape_current()
 
         self.assertEqual(tracks, [{"artist": "Artista Atual", "title": "Atual"}])

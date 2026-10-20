@@ -4,7 +4,7 @@ Script auxiliar para obter o SPOTIFY_REFRESH_TOKEN.
 
 Uso:
   1. Cria uma app em https://developer.spotify.com/dashboard
-  2. Adiciona http://localhost:8888/callback como Redirect URI
+  2. Adiciona http://127.0.0.1:8888/callback como Redirect URI
   3. Copia o Client ID e Client Secret
   4. Corre: python get_refresh_token.py
   5. Abre o URL mostrado no browser, autoriza e copia o `code` do URL de redirect
@@ -18,7 +18,7 @@ import requests
 
 CLIENT_ID = input("Client ID: ").strip()
 CLIENT_SECRET = input("Client Secret: ").strip()
-REDIRECT_URI = "http://localhost:8888/callback"
+REDIRECT_URI = "http://127.0.0.1:8888/callback"
 SCOPES = "playlist-modify-public playlist-modify-private"
 
 auth_url = (

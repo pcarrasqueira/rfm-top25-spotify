@@ -131,13 +131,14 @@ python batida_live_to_spotify.py
 ## Notas tecnicas
 
 - **API Spotify (2026)**: os endpoints `/playlists/{id}/tracks` foram removidos e substituidos por `/playlists/{id}/items`. Todos os scripts usam os endpoints novos.
-- **Scraping RFM**: ambas as paginas (`/top25rfm` e `/que-musica-era`) devolvem HTML estatico.
+- **Scraping RFM**: o historial combina a página da hora atual com as horas anteriores abrangidas pela janela, através do endpoint AJAX do site. As músicas são adicionadas da mais recente para a mais antiga, incluindo na passagem da meia-noite.
 - **Scraping Comercial TNT**: a pagina `/programas/tnt-todos-no-top` devolve HTML estatico com o top semanal.
-- **Scraping Comercial Live**: a pagina `/passou` e renderizada via JS; o scraper extrai texto puro e identifica grupos hora+titulo+artista por regex.
-- **Antena 3 Live**: usa o EPG publico da RTP (`programas.rtp.pt`) para mapear programas e a pagina de cada programa para extrair as musicas tocadas.
-- **M80 Live**: usa o historico JSON publico da M80 para extrair as musicas tocadas na ultima hora.
+- **Antena 3 Live**: usa o historial `/ja-tocou/` e o EPG público da RTP para filtrar entradas de programas. A janela segue as regras de `Europe/Lisbon`, incluindo as mudanças de horário.
+- **M80 e Comercial Live**: consultam os históricos JSON de todas as datas abrangidas pela última hora, incluindo o dia anterior à meia-noite.
 - **Batida FM Live**: usa a API `listenapi.planetradio.co.uk` com o codigo de estacao `bfm`, devolvendo os eventos da ultima hora em JSON.
-- **Spotify rate limits**: todos os workflows partilham um grupo de concorrencia e um cliente comum com tratamento de `Retry-After`, `QUOTA_EXCEEDED` e retries limitados para falhas transitórias 5xx/rede.
+- **Limite de 300 músicas**: é uma regra do projeto, não um limite do Spotify. Primeiro são adicionadas as músicas novas, em lotes de até 100, e só depois são removidas as mais antigas. Uma falha na adição não remove músicas existentes; uma falha na remoção pode deixar a playlist temporariamente acima de 300, sendo o excesso removido na próxima atualização concluída.
+- **Duplicados**: os scripts Live verificam tanto as músicas já existentes como os URIs selecionados durante a própria run.
+- **Spotify rate limits**: todos os workflows partilham um grupo de concorrencia e um cliente comum com tratamento de `Retry-After`, `QUOTA_EXCEEDED` e retries limitados para falhas transitórias 5xx/rede em operações idempotentes. Um POST com timeout, falha de ligação ou erro 5xx não é repetido: a próxima run consulta o estado atual da playlist antes de tentar novas adições. Respostas 429 continuam a respeitar `Retry-After`.
 - **Estado Spotify partilhado**: o GitHub Actions restaura e guarda `.cache/spotify` entre runs. Pesquisas já resolvidas são reutilizadas durante 90 dias, playlists sem alteração são reutilizadas pelo `snapshot_id` e resultados não encontrados ficam em cache durante 7 dias.
 - **Circuit breaker de quota**: quando a API devolve `QUOTA_EXCEEDED`, o `Retry-After` fica persistido. As runs seguintes não renovam o token nem fazem chamadas Spotify até a janela terminar; ficam verdes mas registadas no summary como adiadas.
 - **Cache local**: para alterar a pasta de estado ao correr localmente, define `SPOTIFY_STATE_DIR` (por omissão: `.cache/spotify`). O estado não contém credenciais.

@@ -287,9 +287,12 @@ def spotify_request(
     jitter_fn: Callable[[float, float], float] = random.uniform,
     **kwargs: Any,
 ) -> requests.Response:
-    """Call the Web API, retrying temporary rate limits and server failures."""
+    """Retry rejected requests and safe operations, never ambiguous POST writes."""
 
     ensure_quota_available()
+    # A POST may already have changed a playlist when its response is lost.
+    # Stop and let the next run read the current snapshot before adding again.
+    can_retry_ambiguous_response = method.upper() in {"GET", "HEAD", "OPTIONS", "PUT", "DELETE"}
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
@@ -306,6 +309,9 @@ def spotify_request(
                 **kwargs,
             )
         except (requests.ConnectionError, requests.Timeout) as exc:
+            if not can_retry_ambiguous_response:
+                print(f"  {type(exc).__name__} {method} {url}: resultado incerto; pedido não repetido")
+                raise
             if attempt >= max_retries:
                 print(f"  {type(exc).__name__} {method} {url}: retries esgotados")
                 raise
@@ -320,7 +326,11 @@ def spotify_request(
             continue
 
         if response.status_code != 429:
-            if response.status_code in TRANSIENT_STATUS_CODES and attempt < max_retries:
+            if (
+                response.status_code in TRANSIENT_STATUS_CODES
+                and can_retry_ambiguous_response
+                and attempt < max_retries
+            ):
                 retry_header = response.headers.get("Retry-After")
                 body = _response_body(response)
                 print(

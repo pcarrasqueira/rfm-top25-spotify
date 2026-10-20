@@ -47,13 +47,15 @@ def fetch_tracks() -> list[dict]:
     tz         = ZoneInfo("Europe/Lisbon")
     lisbon_now = datetime.datetime.now(tz).replace(tzinfo=None)
     cutoff     = lisbon_now - datetime.timedelta(hours=WINDOW_HOURS)
-    date_str      = lisbon_now.strftime("%Y-%m-%d")
-    url           = M80_LOG_URL.format(date=date_str)
-
-    resp    = requests.get(url, headers=headers, timeout=20)
-    resp.raise_for_status()
-    records = resp.json().get("NOW_PLAYING_LOG", {}).get("NOW_PLAYING_RECORD", [])
-    print(f"  {len(records)} registos totais hoje ({date_str})")
+    records = []
+    for history_date in sorted({cutoff.date(), lisbon_now.date()}):
+        date_str = history_date.strftime("%Y-%m-%d")
+        url = M80_LOG_URL.format(date=date_str)
+        resp = requests.get(url, headers=headers, timeout=20)
+        resp.raise_for_status()
+        daily_records = resp.json().get("NOW_PLAYING_LOG", {}).get("NOW_PLAYING_RECORD", [])
+        records.extend(daily_records)
+        print(f"  {len(daily_records)} registos em {date_str}")
     print(f"  Janela: {cutoff.strftime('%H:%M')} - {lisbon_now.strftime('%H:%M')} Lisboa")
 
     seen, tracks = set(), []
@@ -63,7 +65,7 @@ def fetch_tracks() -> list[dict]:
             rec_dt = datetime.datetime.strptime(date_raw, "%Y-%m-%d %H:%M:%S")
         except ValueError:
             continue
-        if rec_dt < cutoff:
+        if not cutoff <= rec_dt <= lisbon_now:
             continue
         zenon  = rec.get("ZENON", {})
         title  = zenon.get("SONG_NAME",  "").strip()
@@ -110,12 +112,12 @@ def remove_items(token: str, playlist_id: str, uris: list[str]) -> None:
 def add_items(token: str, playlist_id: str, uris: list[str]) -> None:
     url = SPOTIFY_PLAYLIST_ITEMS.format(id=playlist_id)
     for i in range(0, len(uris), 100):
-        spotify("POST", url, token, json={"uris": uris[i:i + 100], "position": 0})
+        spotify("POST", url, token, json={"uris": uris[i:i + 100], "position": i})
         time.sleep(0.2)
 
 
-def trim_playlist(token: str, playlist_id: str, current_uris: list[str], slots_needed: int) -> tuple[list[str], int]:
-    target  = PLAYLIST_LIMIT - slots_needed
+def trim_playlist(token: str, playlist_id: str, current_uris: list[str]) -> tuple[list[str], int]:
+    target  = PLAYLIST_LIMIT
     removed = 0
     if len(current_uris) > target:
         overflow     = len(current_uris) - target
@@ -172,6 +174,7 @@ def main() -> None:
             else:
                 results.append({"track": t, "status": "added", "match": match})
                 new_uris.append(match["uri"])
+                current_set.add(match["uri"])
                 print(f"  \u2713 {t['artist']} - {t['title']}")
     except QuotaExceededError as e:
         msg = f"Spotify quota excedida; run adiada — {e}"
@@ -189,17 +192,17 @@ def main() -> None:
     not_found = [r for r in results if r["status"] == "not_found"]
     print(f"\nNovos: {len(added)} | Ja na playlist: {len(skipped)} | Nao encontrados: {len(not_found)}")
 
-    slots_needed                = min(len(new_uris), PLAYLIST_LIMIT)
-    current_uris, removed_count = trim_playlist(token, playlist_id, current_uris, slots_needed)
-
     if new_uris:
-        space    = PLAYLIST_LIMIT - len(current_uris)
-        new_uris = new_uris[:space]
         print(f"  A adicionar {len(new_uris)} tracks...")
         add_items(token, playlist_id, new_uris)
+        current_uris = new_uris + current_uris
         print("Playlist actualizada!")
     else:
         print("Nenhum track novo para adicionar.")
+
+    # Only remove old songs after every addition has been confirmed.
+    # Also finish trimming a previous run that stopped after a successful add.
+    current_uris, removed_count = trim_playlist(token, playlist_id, current_uris)
 
     if new_uris:
         lisbon_str = datetime.datetime.now(ZoneInfo("Europe/Lisbon")).strftime("%d/%m/%Y %H:%M")

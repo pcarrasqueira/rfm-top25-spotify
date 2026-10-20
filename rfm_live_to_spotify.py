@@ -28,6 +28,7 @@ SPOTIFY_SEARCH_URL     = "https://api.spotify.com/v1/search"
 SPOTIFY_PLAYLIST_ITEMS = "https://api.spotify.com/v1/playlists/{id}/items"
 SPOTIFY_PLAYLIST_URL   = "https://api.spotify.com/v1/playlists/{id}"
 RFM_HISTORY_URL        = "https://rfm.pt/que-musica-era"
+RFM_HISTORY_SEARCH_URL = "https://rfm.pt/ajax/quemusicaera/getquemusicaera_rfm.aspx"
 PLAYLIST_LIMIT         = 300
 WINDOW_HOURS           = 1
 RFM_TIME_RE            = re.compile(r"\b\d{1,2}:\d{2}\b")
@@ -46,20 +47,51 @@ def write_summary(lines: list[str]) -> None:
         f.write("\n".join(lines) + "\n")
 
 
-def scrape_current() -> list[dict]:
+def scrape_current(now: datetime.datetime | None = None) -> list[dict]:
+    lisbon_now = now if now is not None else datetime.datetime.now(LISBON_TZ)
     headers = {"User-Agent": "Mozilla/5.0 (compatible; rfm-live-bot/1.0)"}
     try:
         resp = requests.get(RFM_HISTORY_URL, headers=headers, timeout=20)
         resp.raise_for_status()
+        histories = [(lisbon_now.date(), resp.text)]
+        cutoff = lisbon_now - datetime.timedelta(hours=WINDOW_HOURS)
+        hour = lisbon_now.replace(minute=0, second=0, microsecond=0)
+        first_hour = cutoff.replace(minute=0, second=0, microsecond=0)
+        while hour > first_hour:
+            hour -= datetime.timedelta(hours=1)
+            previous = requests.post(
+                RFM_HISTORY_SEARCH_URL,
+                headers=headers,
+                data={
+                    "hora": str(hour.hour),
+                    "dia": "today" if hour.date() == lisbon_now.date() else "yesterday",
+                },
+                timeout=20,
+            )
+            previous.raise_for_status()
+            # The AJAX endpoint returns song blocks, without the page container.
+            histories.append((hour.date(), f'<section id="musicList">{previous.text}</section>'))
     except requests.RequestException as exc:
         raise RFMHistoryError(f"Erro ao obter o historial da RFM: {exc}") from exc
 
-    tracks = parse_history(resp.text, datetime.datetime.now(LISBON_TZ))
+    tracks, seen = [], set()
+    # Pages and their songs are processed newest first, including across midnight.
+    for history_date, html in histories:
+        for track in parse_history(html, lisbon_now, history_date=history_date):
+            key = normalize_track_key(track["artist"], track["title"])
+            if key not in seen:
+                seen.add(key)
+                tracks.append(track)
     print(f"  {len(tracks)} tracks unicos na ultima {WINDOW_HOURS}h")
     return tracks
 
 
-def parse_history(html: str, lisbon_now: datetime.datetime) -> list[dict]:
+def parse_history(
+    html: str,
+    lisbon_now: datetime.datetime,
+    *,
+    history_date: datetime.date | None = None,
+) -> list[dict]:
     soup = BeautifulSoup(html, "lxml")
     history = soup.select_one("#musicList")
     if history is None:
@@ -70,8 +102,7 @@ def parse_history(html: str, lisbon_now: datetime.datetime) -> list[dict]:
         raise RFMHistoryError("Não foi possível reconhecer os blocos de músicas no historial da RFM.")
 
     cutoff      = lisbon_now - datetime.timedelta(hours=WINDOW_HOURS)
-    tracks      = []
-    seen        = set()
+    timed_tracks = []
     for index, row in enumerate(rows, start=1):
         time_cell = row.select_one(".t-hor")
         description = row.select(".t-desc ul > li")
@@ -84,26 +115,30 @@ def parse_history(html: str, lisbon_now: datetime.datetime) -> list[dict]:
         try:
             hour, minute = (int(part) for part in time_match.group().split(":"))
             record_dt = datetime.datetime.combine(
-                lisbon_now.date(),
+                history_date if history_date is not None else lisbon_now.date(),
                 datetime.time(hour, minute),
                 tzinfo=LISBON_TZ,
             )
         except ValueError as exc:
             raise RFMHistoryError(f"Registo {index}: hora inválida no historial da RFM.") from exc
-        if record_dt > lisbon_now + datetime.timedelta(minutes=5):
+        if history_date is None and record_dt > lisbon_now + datetime.timedelta(minutes=5):
             record_dt -= datetime.timedelta(days=1)
 
         title = description[0].get_text(" ", strip=True)
         artist = description[1].get_text(" ", strip=True)
         if not title or not artist:
             raise RFMHistoryError(f"Registo {index}: título ou artista vazio no historial da RFM.")
-        if record_dt < cutoff:
+        if not cutoff <= record_dt <= lisbon_now + datetime.timedelta(minutes=5):
             continue
 
-        key = (artist.upper(), title.upper())
+        timed_tracks.append((record_dt, {"artist": artist, "title": title}))
+
+    tracks, seen = [], set()
+    for _, track in sorted(timed_tracks, key=lambda item: item[0], reverse=True):
+        key = normalize_track_key(track["artist"], track["title"])
         if key not in seen:
             seen.add(key)
-            tracks.append({"artist": artist, "title": title})
+            tracks.append(track)
     return tracks
 
 
@@ -139,12 +174,12 @@ def remove_items(token: str, playlist_id: str, uris: list[str]) -> None:
 def add_items(token: str, playlist_id: str, uris: list[str]) -> None:
     url = SPOTIFY_PLAYLIST_ITEMS.format(id=playlist_id)
     for i in range(0, len(uris), 100):
-        spotify("POST", url, token, json={"uris": uris[i:i + 100], "position": 0})
+        spotify("POST", url, token, json={"uris": uris[i:i + 100], "position": i})
         time.sleep(0.2)
 
 
-def trim_playlist(token: str, playlist_id: str, current_uris: list[str], slots_needed: int) -> tuple[list[str], int]:
-    target  = PLAYLIST_LIMIT - slots_needed
+def trim_playlist(token: str, playlist_id: str, current_uris: list[str]) -> tuple[list[str], int]:
+    target  = PLAYLIST_LIMIT
     removed = 0
     if len(current_uris) > target:
         overflow     = len(current_uris) - target
@@ -209,6 +244,7 @@ def main() -> None:
             else:
                 results.append({"track": t, "status": "added", "match": match})
                 new_uris.append(match["uri"])
+                current_set.add(match["uri"])
                 print(f"  \u2713 {t['artist']} - {t['title']}")
     except QuotaExceededError as e:
         msg = f"Spotify quota excedida; run adiada — {e}"
@@ -226,17 +262,17 @@ def main() -> None:
     not_found = [r for r in results if r["status"] == "not_found"]
     print(f"\nNovos: {len(added)} | Ja na playlist: {len(skipped)} | Nao encontrados: {len(not_found)}")
 
-    slots_needed          = min(len(new_uris), PLAYLIST_LIMIT)
-    current_uris, removed_count = trim_playlist(token, playlist_id, current_uris, slots_needed)
-
     if new_uris:
-        space    = PLAYLIST_LIMIT - len(current_uris)
-        new_uris = new_uris[:space]
         print(f"  A adicionar {len(new_uris)} tracks...")
         add_items(token, playlist_id, new_uris)
+        current_uris = new_uris + current_uris
         print("Playlist actualizada!")
     else:
         print("Nenhum track novo para adicionar.")
+
+    # Only remove old songs after every addition has been confirmed.
+    # Also finish trimming a previous run that stopped after a successful add.
+    current_uris, removed_count = trim_playlist(token, playlist_id, current_uris)
 
     if new_uris:
         lisbon_str = datetime.datetime.now(ZoneInfo("Europe/Lisbon")).strftime("%d/%m/%Y %H:%M")
