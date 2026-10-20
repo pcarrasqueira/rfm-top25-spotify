@@ -316,10 +316,16 @@ class SpotifyClientTests(unittest.TestCase):
         current_time = now.strftime("%H:%M")
         old_time = (now - datetime.timedelta(hours=2)).strftime("%H:%M")
         html = f"""
-        <ul>
-          <li><span>{current_time}</span><ul><li>Atual</li><li>Artista Atual</li></ul></li>
-          <li><span>{old_time}</span><ul><li>Antiga</li><li>Artista Antigo</li></ul></li>
-        </ul>
+        <section id="musicList">
+          <ul class="g-mx">
+            <li class="t-hor"><span>{current_time}</span></li>
+            <li class="t-desc"><ul><li>Atual</li><li>Artista Atual</li></ul></li>
+          </ul>
+          <ul class="g-mx">
+            <li class="t-hor"><span>{old_time}</span></li>
+            <li class="t-desc"><ul><li>Antiga</li><li>Artista Antigo</li></ul></li>
+          </ul>
+        </section>
         """
         response = Mock(text=html)
 

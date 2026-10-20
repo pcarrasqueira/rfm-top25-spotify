@@ -34,6 +34,10 @@ RFM_TIME_RE            = re.compile(r"\b\d{1,2}:\d{2}\b")
 LISBON_TZ              = ZoneInfo("Europe/Lisbon")
 
 
+class RFMHistoryError(RuntimeError):
+    """O historial da RFM não pôde ser obtido ou interpretado."""
+
+
 def write_summary(lines: list[str]) -> None:
     summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
     if not summary_file:
@@ -47,44 +51,59 @@ def scrape_current() -> list[dict]:
     try:
         resp = requests.get(RFM_HISTORY_URL, headers=headers, timeout=20)
         resp.raise_for_status()
-    except Exception as e:
-        print(f"  Erro ao scrape RFM: {e}")
-        return []
+    except requests.RequestException as exc:
+        raise RFMHistoryError(f"Erro ao obter o historial da RFM: {exc}") from exc
 
-    soup        = BeautifulSoup(resp.text, "lxml")
-    lisbon_now  = datetime.datetime.now(LISBON_TZ)
+    tracks = parse_history(resp.text, datetime.datetime.now(LISBON_TZ))
+    print(f"  {len(tracks)} tracks unicos na ultima {WINDOW_HOURS}h")
+    return tracks
+
+
+def parse_history(html: str, lisbon_now: datetime.datetime) -> list[dict]:
+    soup = BeautifulSoup(html, "lxml")
+    history = soup.select_one("#musicList")
+    if history is None:
+        raise RFMHistoryError("Historial #musicList não encontrado; o formato da página pode ter mudado.")
+
+    rows = history.select("ul.g-mx")
+    if not rows and (history.find() is not None or history.get_text(strip=True)):
+        raise RFMHistoryError("Não foi possível reconhecer os blocos de músicas no historial da RFM.")
+
     cutoff      = lisbon_now - datetime.timedelta(hours=WINDOW_HOURS)
     tracks      = []
     seen        = set()
-    for li in soup.select("ul li"):
-        children = li.find_all("li")
-        if len(children) >= 2:
-            time_match = RFM_TIME_RE.search(li.get_text(" ", strip=True))
-            if not time_match:
-                continue
-            try:
-                hour, minute = (int(part) for part in time_match.group().split(":"))
-                record_dt = datetime.datetime.combine(
-                    lisbon_now.date(),
-                    datetime.time(hour, minute),
-                    tzinfo=LISBON_TZ,
-                )
-            except ValueError:
-                continue
-            if record_dt > lisbon_now + datetime.timedelta(minutes=5):
-                record_dt -= datetime.timedelta(days=1)
-            if record_dt < cutoff:
-                continue
+    for index, row in enumerate(rows, start=1):
+        time_cell = row.select_one(".t-hor")
+        description = row.select(".t-desc ul > li")
+        if time_cell is None or len(description) != 2:
+            raise RFMHistoryError(f"Registo {index}: hora, título ou artista em falta no historial da RFM.")
 
-            title  = children[0].get_text(strip=True)
-            artist = children[1].get_text(strip=True)
-            if not title or not artist or title == "Quando" or artist == "Periodo":
-                continue
-            key = (artist.upper(), title.upper())
-            if key not in seen:
-                seen.add(key)
-                tracks.append({"artist": artist, "title": title})
-    print(f"  {len(tracks)} tracks unicos na ultima {WINDOW_HOURS}h")
+        time_match = RFM_TIME_RE.fullmatch(time_cell.get_text(" ", strip=True))
+        if time_match is None:
+            raise RFMHistoryError(f"Registo {index}: hora inválida no historial da RFM.")
+        try:
+            hour, minute = (int(part) for part in time_match.group().split(":"))
+            record_dt = datetime.datetime.combine(
+                lisbon_now.date(),
+                datetime.time(hour, minute),
+                tzinfo=LISBON_TZ,
+            )
+        except ValueError as exc:
+            raise RFMHistoryError(f"Registo {index}: hora inválida no historial da RFM.") from exc
+        if record_dt > lisbon_now + datetime.timedelta(minutes=5):
+            record_dt -= datetime.timedelta(days=1)
+
+        title = description[0].get_text(" ", strip=True)
+        artist = description[1].get_text(" ", strip=True)
+        if not title or not artist:
+            raise RFMHistoryError(f"Registo {index}: título ou artista vazio no historial da RFM.")
+        if record_dt < cutoff:
+            continue
+
+        key = (artist.upper(), title.upper())
+        if key not in seen:
+            seen.add(key)
+            tracks.append({"artist": artist, "title": title})
     return tracks
 
 
@@ -146,10 +165,17 @@ def main() -> None:
     print("=== RFM Live -> Spotify ===")
 
     print("\nA recolher tracks actuais da RFM...")
-    raw_tracks = scrape_current()
+    try:
+        raw_tracks = scrape_current()
+    except RFMHistoryError as exc:
+        message = f"Falha ao recolher músicas da RFM: {exc}"
+        print(message)
+        write_summary(["## RFM Live -> Spotify", "", f"> ❌ {message}"])
+        sys.exit(1)
     if not raw_tracks:
-        print("Nenhum track encontrado, a sair.")
-        write_summary(["## RFM Live -> Spotify", "", "Sem tracks novos nesta hora."])
+        message = f"Sem músicas no historial da RFM na última {WINDOW_HOURS}h; leitura concluída sem erros."
+        print(message)
+        write_summary(["## RFM Live -> Spotify", "", message])
         sys.exit(0)
     print(f"  {len(raw_tracks)} tracks encontrados")
 
